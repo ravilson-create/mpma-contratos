@@ -5,8 +5,8 @@ import './index.css'
 
 // ─── SUPABASE ────────────────────────────────────────────────
 const supabase = createClient(
-  import.meta.env.VITE_SUPABASE_URL,
-  import.meta.env.VITE_SUPABASE_ANON_KEY
+  'https://yyerrogmzdamqieuyqpv.supabase.co/rest/v1/',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl5ZXJyb2dtemRhbXFpZXV5cXB2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIyMjQyNTcsImV4cCI6MjA5NzgwMDI1N30.B7R3WCsAZ_lxd_nfqOpSSOd9LWG_DMUsGq6pzZapnKs'
 )
 
 // ─── AUTH LOCAL ──────────────────────────────────────────────
