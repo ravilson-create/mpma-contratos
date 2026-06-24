@@ -1,43 +1,39 @@
-import { createContext, useContext, useEffect, useState } from 'react'
-import { supabase } from '../lib/supabase'
+import { createContext, useContext, useState, useEffect } from 'react'
 
 const AuthCtx = createContext(null)
 
+// Usuarios do sistema - adicione novos usuarios aqui
+const USUARIOS = [
+  { email: 'ravilson@mpma.mp.br', senha: 'Mpma@2026', nome: 'Ravilson', perfil: 'admin' },
+  { email: 'admin@mpma.mp.br',    senha: 'Mpma@2026', nome: 'Administrador', perfil: 'admin' },
+]
+
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null)
-  const [perfil, setPerfil] = useState(null)
-  const [loading, setLoading] = useState(true)
+  const [user, setUser] = useState(() => {
+    const salvo = localStorage.getItem('mpma_user')
+    return salvo ? JSON.parse(salvo) : null
+  })
 
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null)
-      if (session?.user) carregarPerfil(session.user.id)
-      else setLoading(false)
-    })
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, session) => {
-      setUser(session?.user ?? null)
-      if (session?.user) carregarPerfil(session.user.id)
-      else { setPerfil(null); setLoading(false) }
-    })
-    return () => subscription.unsubscribe()
-  }, [])
-
-  async function carregarPerfil(uid) {
-    const { data } = await supabase.from('perfis').select('*').eq('id', uid).single()
-    setPerfil(data)
-    setLoading(false)
+  function login(email, senha) {
+    const encontrado = USUARIOS.find(
+      u => u.email.toLowerCase() === email.toLowerCase() && u.senha === senha
+    )
+    if (encontrado) {
+      const userData = { email: encontrado.email, nome: encontrado.nome, perfil: encontrado.perfil }
+      setUser(userData)
+      localStorage.setItem('mpma_user', JSON.stringify(userData))
+      return { error: null }
+    }
+    return { error: 'invalido' }
   }
 
-  async function login(email, senha) {
-    return supabase.auth.signInWithPassword({ email, password: senha })
-  }
-
-  async function logout() {
-    await supabase.auth.signOut()
+  function logout() {
+    setUser(null)
+    localStorage.removeItem('mpma_user')
   }
 
   return (
-    <AuthCtx.Provider value={{ user, perfil, loading, login, logout }}>
+    <AuthCtx.Provider value={{ user, perfil: user, loading: false, login, logout }}>
       {children}
     </AuthCtx.Provider>
   )
