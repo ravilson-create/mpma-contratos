@@ -12,7 +12,7 @@ export default function Login() {
     e.preventDefault()
     setErro('')
     setLoading(true)
-    const { error } = await login(email, senha)
+    const { error } = login(email, senha)
     if (error) setErro('E-mail ou senha inválidos.')
     setLoading(false)
   }
