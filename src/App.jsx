@@ -495,8 +495,20 @@ function Dashboard({ onVerContrato }) {
   contratos.forEach(c => {
     const sal = c.totalEmp - c.totalMed
     const dias = diasAte(c.data_vencimento)
-    if (c.totalEmp>0&&sal<0) alertas.push({ tipo:'danger', msg:`Contrato ${c.numero} (${c.empresa}): saldo NEGATIVO ${fmt(sal)}` })
-    else if (c.totalEmp>0&&sal<Number(c.valor_mensal_previsto||0)) alertas.push({ tipo:'danger', msg:`Contrato ${c.numero} (${c.empresa}): saldo insuficiente ${fmt(sal)}` })
+    const anual = Number(c.valor_anual || 0)
+    const loa = Number(c.loa_2026 || 0)
+    const percAnual = anual > 0 ? c.totalMed / anual * 100 : 0
+    const percLoa   = loa   > 0 ? c.totalEmp / loa   * 100 : 0
+    // Alertas empenho x medição
+    if (c.totalEmp>0&&sal<0) alertas.push({ tipo:'danger', msg:`Contrato ${c.numero} (${c.empresa}): saldo de empenho NEGATIVO ${fmt(sal)}` })
+    else if (c.totalEmp>0&&sal<Number(c.valor_mensal_previsto||0)) alertas.push({ tipo:'danger', msg:`Contrato ${c.numero} (${c.empresa}): saldo de empenho insuficiente ${fmt(sal)}` })
+    // Alertas valor anual
+    if (anual>0&&percAnual>=100) alertas.push({ tipo:'danger', msg:`Contrato ${c.numero} (${c.empresa}): total medido (${fmt(c.totalMed)}) ULTRAPASSOU o valor anual (${fmt(anual)})` })
+    else if (anual>0&&percAnual>=80) alertas.push({ tipo:'warn', msg:`Contrato ${c.numero} (${c.empresa}): ${percAnual.toFixed(0)}% do valor anual já medido — saldo restante ${fmt(anual-c.totalMed)}` })
+    // Alertas LOA
+    if (loa>0&&percLoa>=100) alertas.push({ tipo:'danger', msg:`Contrato ${c.numero} (${c.empresa}): total empenhado (${fmt(c.totalEmp)}) ULTRAPASSOU a LOA 2026 (${fmt(loa)})` })
+    else if (loa>0&&percLoa>=80) alertas.push({ tipo:'warn', msg:`Contrato ${c.numero} (${c.empresa}): ${percLoa.toFixed(0)}% da LOA já empenhado — saldo LOA restante ${fmt(loa-c.totalEmp)}` })
+    // Alertas prazo
     if (c.data_vencimento&&dias>=0&&dias<=30) alertas.push({ tipo:'danger', msg:`Contrato ${c.numero} (${c.empresa}): vence em ${dias} dia${dias===1?'':'s'}` })
     else if (c.data_vencimento&&dias>30&&dias<=120) alertas.push({ tipo:'warn', msg:`Contrato ${c.numero} (${c.empresa}): vence em ${dias} dias` })
   })
@@ -636,9 +648,16 @@ function Alertas() {
         const emp=(es||[]).filter(e=>e.contrato_id===c.id).reduce((a,e)=>a+Number(e.valor),0)
         const med=(ms||[]).filter(m=>m.contrato_id===c.id).reduce((a,m)=>a+Number(m.valor),0)
         const sal=emp-med; const dias=diasAte(c.data_vencimento)
-        if (emp>0&&sal<0) al.push({tipo:'danger',contrato:c.numero,empresa:c.empresa,msg:`Saldo NEGATIVO: ${fmt(sal)} — empenho precisa ser reforçado urgentemente`})
-        else if (emp>0&&sal<Number(c.valor_mensal_previsto||0)) al.push({tipo:'danger',contrato:c.numero,empresa:c.empresa,msg:`Saldo insuficiente: ${fmt(sal)} — menor que uma medição mensal`})
-        else if (emp>0&&sal<Number(c.valor_mensal_previsto||0)*2) al.push({tipo:'warn',contrato:c.numero,empresa:c.empresa,msg:`Saldo baixo: ${fmt(sal)} — reforce o empenho em breve`})
+        const anual=Number(c.valor_anual||0); const loa=Number(c.loa_2026||0)
+        const percAnual=anual>0?med/anual*100:0
+        const percLoa=loa>0?emp/loa*100:0
+        if (emp>0&&sal<0) al.push({tipo:'danger',contrato:c.numero,empresa:c.empresa,msg:`Saldo de empenho NEGATIVO: ${fmt(sal)} — reforce urgentemente`})
+        else if (emp>0&&sal<Number(c.valor_mensal_previsto||0)) al.push({tipo:'danger',contrato:c.numero,empresa:c.empresa,msg:`Saldo de empenho insuficiente: ${fmt(sal)} — menor que uma medição mensal`})
+        else if (emp>0&&sal<Number(c.valor_mensal_previsto||0)*2) al.push({tipo:'warn',contrato:c.numero,empresa:c.empresa,msg:`Saldo de empenho baixo: ${fmt(sal)} — reforce em breve`})
+        if (anual>0&&percAnual>=100) al.push({tipo:'danger',contrato:c.numero,empresa:c.empresa,msg:`Total medido (${fmt(med)}) ULTRAPASSOU o valor anual do contrato (${fmt(anual)})`})
+        else if (anual>0&&percAnual>=80) al.push({tipo:'warn',contrato:c.numero,empresa:c.empresa,msg:`${percAnual.toFixed(0)}% do valor anual já executado — saldo restante: ${fmt(anual-med)}`})
+        if (loa>0&&percLoa>=100) al.push({tipo:'danger',contrato:c.numero,empresa:c.empresa,msg:`Total empenhado (${fmt(emp)}) ULTRAPASSOU a LOA 2026 (${fmt(loa)})`})
+        else if (loa>0&&percLoa>=80) al.push({tipo:'warn',contrato:c.numero,empresa:c.empresa,msg:`${percLoa.toFixed(0)}% da LOA 2026 já empenhado — saldo LOA restante: ${fmt(loa-emp)}`})
         if (c.data_vencimento&&dias>=0&&dias<=30) al.push({tipo:'danger',contrato:c.numero,empresa:c.empresa,msg:`Vence em ${dias} dia${dias===1?'':'s'} — providencie renovação`})
         else if (c.data_vencimento&&dias>30&&dias<=120) al.push({tipo:'warn',contrato:c.numero,empresa:c.empresa,msg:`Vence em ${dias} dias (${new Date(c.data_vencimento+'T00:00:00').toLocaleDateString('pt-BR')})`})
       })
