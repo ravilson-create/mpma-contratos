@@ -92,6 +92,9 @@ function Sidebar({ pagina, setPagina, qtdAlertas }) {
           </button>
         ))}
       </nav>
+      <div style={{ padding: '.5rem 1rem 0' }}>
+        <button className='nav-item' style={{width:'100%'}} onClick={gerarRelatorio}>📄 Gerar Relatório</button>
+      </div>
       <div style={{ padding: '1rem', borderTop: '1px solid var(--border)' }}>
         <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 8 }}>
           <div style={{ color: 'var(--text2)', fontWeight: 500 }}>{user?.nome}</div>
@@ -758,6 +761,200 @@ function Orcamento() {
 }
 
 // ─── APP SHELL ───────────────────────────────────────────────
+
+// ─── RELATÓRIO ───────────────────────────────────────────────
+async function gerarRelatorio() {
+  const { data: cs } = await supabase.from('contratos').select('*').order('numero')
+  const { data: es } = await supabase.from('empenhos').select('*').order('data_empenho')
+  const { data: ms } = await supabase.from('medicoes').select('*').order('data_medicao').order('criado_em')
+
+  const fmtR = v => Number(v||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL',minimumFractionDigits:2})
+  const fmtD = d => d ? new Date(d+'T00:00:00').toLocaleDateString('pt-BR') : '—'
+  const diasAteR = d => { if(!d) return 9999; return Math.ceil((new Date(d+'T00:00:00')-new Date())/864e5) }
+
+  const contratos = (cs||[]).map(c => ({
+    ...c,
+    empenhos: (es||[]).filter(e=>e.contrato_id===c.id),
+    medicoes: (ms||[]).filter(m=>m.contrato_id===c.id),
+    totalEmp: (es||[]).filter(e=>e.contrato_id===c.id).reduce((a,e)=>a+Number(e.valor),0),
+    totalMed: (ms||[]).filter(m=>m.contrato_id===c.id).reduce((a,m)=>a+Number(m.valor),0),
+  }))
+
+  // Gerar alertas
+  const alertas = []
+  contratos.forEach(c => {
+    const sal=c.totalEmp-c.totalMed; const dias=diasAteR(c.data_vencimento)
+    const anual=Number(c.valor_anual||0); const loa=Number(c.loa_2026||0)
+    const percAnual=anual>0?c.totalMed/anual*100:0
+    const percLoa=loa>0?c.totalEmp/loa*100:0
+    if (c.totalEmp>0&&sal<0) alertas.push({tipo:'CRITICO',contrato:c.numero,empresa:c.empresa,msg:`Saldo de empenho NEGATIVO: ${fmtR(sal)}`})
+    else if (c.totalEmp>0&&sal<Number(c.valor_mensal_previsto||0)) alertas.push({tipo:'CRITICO',contrato:c.numero,empresa:c.empresa,msg:`Saldo de empenho insuficiente: ${fmtR(sal)}`})
+    else if (c.totalEmp>0&&sal<Number(c.valor_mensal_previsto||0)*2) alertas.push({tipo:'ATENCAO',contrato:c.numero,empresa:c.empresa,msg:`Saldo de empenho baixo: ${fmtR(sal)}`})
+    if (anual>0&&percAnual>=100) alertas.push({tipo:'CRITICO',contrato:c.numero,empresa:c.empresa,msg:`Total medido ultrapassou o valor anual do contrato`})
+    else if (anual>0&&percAnual>=80) alertas.push({tipo:'ATENCAO',contrato:c.numero,empresa:c.empresa,msg:`${percAnual.toFixed(0)}% do valor anual ja executado — saldo: ${fmtR(anual-c.totalMed)}`})
+    if (loa>0&&percLoa>=100) alertas.push({tipo:'CRITICO',contrato:c.numero,empresa:c.empresa,msg:`Total empenhado ultrapassou a LOA 2026`})
+    else if (loa>0&&percLoa>=80) alertas.push({tipo:'ATENCAO',contrato:c.numero,empresa:c.empresa,msg:`${percLoa.toFixed(0)}% da LOA ja empenhado — saldo LOA: ${fmtR(loa-c.totalEmp)}`})
+    if (c.data_vencimento&&dias>=0&&dias<=30) alertas.push({tipo:'CRITICO',contrato:c.numero,empresa:c.empresa,msg:`Vence em ${dias} dia(s) — providencie renovacao`})
+    else if (c.data_vencimento&&dias>30&&dias<=120) alertas.push({tipo:'ATENCAO',contrato:c.numero,empresa:c.empresa,msg:`Vence em ${dias} dias (${fmtD(c.data_vencimento)})`})
+  })
+
+  const tEmp=contratos.reduce((a,c)=>a+c.totalEmp,0)
+  const tMed=contratos.reduce((a,c)=>a+c.totalMed,0)
+  const tLoa=contratos.reduce((a,c)=>a+Number(c.loa_2026||0),0)
+  const tAnual=contratos.reduce((a,c)=>a+Number(c.valor_anual||0),0)
+  const hoje = new Date().toLocaleDateString('pt-BR')
+
+  const html = `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Relatorio de Contratos MPMA</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Arial, sans-serif; font-size: 11px; color: #1a1a1a; background: #fff; }
+  .page { padding: 20mm 15mm; }
+  h1 { font-size: 16px; font-weight: 700; color: #0c447c; margin-bottom: 2px; }
+  h2 { font-size: 13px; font-weight: 700; color: #0c447c; margin: 16px 0 6px; border-bottom: 1.5px solid #0c447c; padding-bottom: 3px; }
+  h3 { font-size: 11px; font-weight: 700; margin: 10px 0 4px; color: #333; }
+  .subtitulo { font-size: 11px; color: #555; margin-bottom: 2px; }
+  .data-rel { font-size: 10px; color: #888; margin-bottom: 16px; }
+  .sumario { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; margin-bottom: 16px; }
+  .sum-card { background: #f0f4fa; border-radius: 5px; padding: 8px 10px; }
+  .sum-card .lbl { font-size: 9px; color: #666; margin-bottom: 2px; }
+  .sum-card .val { font-size: 13px; font-weight: 700; color: #0c447c; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 10px; font-size: 10px; }
+  th { background: #0c447c; color: #fff; padding: 5px 6px; text-align: left; font-size: 9px; font-weight: 600; }
+  td { padding: 4px 6px; border-bottom: 0.5px solid #ddd; vertical-align: top; }
+  tr:nth-child(even) td { background: #f7f9fc; }
+  .tr { text-align: right; }
+  .verde { color: #27500a; font-weight: 700; }
+  .amarelo { color: #633806; font-weight: 700; }
+  .vermelho { color: #7a1010; font-weight: 700; }
+  .badge-critico { background: #fce8e8; color: #7a1010; padding: 1px 6px; border-radius: 8px; font-size: 9px; font-weight: 700; }
+  .badge-atencao { background: #fef3e2; color: #633806; padding: 1px 6px; border-radius: 8px; font-size: 9px; font-weight: 700; }
+  .bloco-contrato { border: 0.5px solid #ccc; border-radius: 5px; padding: 10px 12px; margin-bottom: 14px; page-break-inside: avoid; }
+  .contrato-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 6px; }
+  .contrato-titulo { font-size: 12px; font-weight: 700; color: #0c447c; }
+  .contrato-empresa { font-size: 11px; color: #333; }
+  .contrato-local { font-size: 10px; color: #777; margin-top: 1px; }
+  .financeiro-grid { display: grid; grid-template-columns: repeat(5,1fr); gap: 6px; margin: 8px 0; }
+  .fin-item { background: #f7f9fc; border-radius: 4px; padding: 5px 7px; }
+  .fin-item .lbl { font-size: 9px; color: #888; }
+  .fin-item .val { font-size: 11px; font-weight: 700; margin-top: 1px; }
+  .alerta-row { padding: 4px 8px; margin: 3px 0; border-radius: 4px; font-size: 10px; }
+  .alerta-critico { background: #fce8e8; color: #7a1010; border-left: 3px solid #c0392b; }
+  .alerta-atencao { background: #fef3e2; color: #633806; border-left: 3px solid #e67e22; }
+  .secao-alertas { margin-top: 16px; }
+  .rodape { margin-top: 20px; padding-top: 8px; border-top: 0.5px solid #ccc; font-size: 9px; color: #999; text-align: center; }
+  @media print {
+    @page { size: A4; margin: 15mm; }
+    .no-print { display: none; }
+    .bloco-contrato { page-break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="no-print" style="background:#0c447c;color:#fff;padding:10px 14px;margin-bottom:16px;border-radius:5px;display:flex;justify-content:space-between;align-items:center">
+    <span style="font-weight:700">Relatorio gerado — clique em Imprimir para salvar como PDF</span>
+    <button onclick="window.print()" style="background:#fff;color:#0c447c;border:none;padding:6px 16px;border-radius:4px;font-weight:700;cursor:pointer;font-size:12px">Imprimir / Salvar PDF</button>
+  </div>
+
+  <h1>Ministerio Publico do Maranhao — MPMA</h1>
+  <div class="subtitulo">Relatorio de Contratos de Manutencao Predial</div>
+  <div class="data-rel">Emitido em: ${hoje} &nbsp;|&nbsp; Total de contratos: ${contratos.length}</div>
+
+  <h2>Resumo Financeiro Consolidado</h2>
+  <div class="sumario">
+    <div class="sum-card"><div class="lbl">Total empenhado</div><div class="val">${fmtR(tEmp)}</div></div>
+    <div class="sum-card"><div class="lbl">Total medido/pago</div><div class="val">${fmtR(tMed)}</div></div>
+    <div class="sum-card"><div class="lbl">Saldo total empenhos</div><div class="val" style="color:${tEmp-tMed<0?'#c0392b':'#27500a'}">${fmtR(tEmp-tMed)}</div></div>
+    <div class="sum-card"><div class="lbl">LOA 2026 total</div><div class="val">${fmtR(tLoa)}</div></div>
+    <div class="sum-card"><div class="lbl">Valor anual contratos</div><div class="val">${fmtR(tAnual)}</div></div>
+    <div class="sum-card"><div class="lbl">Alertas criticos</div><div class="val" style="color:${alertas.filter(a=>a.tipo==='CRITICO').length>0?'#c0392b':'#27500a'}">${alertas.filter(a=>a.tipo==='CRITICO').length}</div></div>
+    <div class="sum-card"><div class="lbl">Alertas de atencao</div><div class="val" style="color:${alertas.filter(a=>a.tipo==='ATENCAO').length>0?'#e67e22':'#27500a'}">${alertas.filter(a=>a.tipo==='ATENCAO').length}</div></div>
+    <div class="sum-card"><div class="lbl">Total alertas</div><div class="val">${alertas.length}</div></div>
+  </div>
+
+  ${alertas.length>0?`
+  <h2>Alertas da Situacao dos Contratos</h2>
+  ${alertas.filter(a=>a.tipo==='CRITICO').length>0?`
+    <div style="font-size:10px;font-weight:700;color:#7a1010;margin-bottom:4px">CRITICOS (${alertas.filter(a=>a.tipo==='CRITICO').length})</div>
+    ${alertas.filter(a=>a.tipo==='CRITICO').map(a=>`<div class="alerta-row alerta-critico"><strong>${a.contrato} — ${a.empresa}:</strong> ${a.msg}</div>`).join('')}
+  `:''}
+  ${alertas.filter(a=>a.tipo==='ATENCAO').length>0?`
+    <div style="font-size:10px;font-weight:700;color:#633806;margin:8px 0 4px">ATENCAO (${alertas.filter(a=>a.tipo==='ATENCAO').length})</div>
+    ${alertas.filter(a=>a.tipo==='ATENCAO').map(a=>`<div class="alerta-row alerta-atencao"><strong>${a.contrato} — ${a.empresa}:</strong> ${a.msg}</div>`).join('')}
+  `:''}
+  `:'<div style="background:#eaf3de;color:#27500a;padding:6px 10px;border-radius:4px;font-size:10px;margin-bottom:12px">Nenhum alerta ativo no momento.</div>'}
+
+  <h2>Detalhamento por Contrato</h2>
+  ${contratos.map(c => {
+    const sal=c.totalEmp-c.totalMed
+    const anual=Number(c.valor_anual||0); const loa=Number(c.loa_2026||0)
+    const salCor=sal<0?'vermelho':sal<Number(c.valor_mensal_previsto||0)?'amarelo':'verde'
+    let saldoAcum=c.totalEmp
+    const medsComSaldo=c.medicoes.map(m=>{ saldoAcum-=Number(m.valor); return {...m,saldoApos:saldoAcum} })
+    return `
+    <div class="bloco-contrato">
+      <div class="contrato-header">
+        <div>
+          <div class="contrato-titulo">Contrato ${c.numero}</div>
+          <div class="contrato-empresa">${c.empresa}</div>
+          <div class="contrato-local">${c.local_unidade||''}</div>
+        </div>
+        <div style="text-align:right;font-size:10px;color:#555">
+          ${c.sei_contrato?`SEI: ${c.sei_contrato}<br>`:''}
+          ${c.data_vencimento?`Vigencia: ${fmtD(c.data_vencimento)}`:''}
+          ${c.gestor_nome?`<br>Gestor: ${c.gestor_nome}`:''}
+          ${c.fiscal_nome?`<br>Fiscal: ${c.fiscal_nome}`:''}
+        </div>
+      </div>
+      <div class="financeiro-grid">
+        <div class="fin-item"><div class="lbl">Valor anual</div><div class="val">${anual>0?fmtR(anual):'—'}</div></div>
+        <div class="fin-item"><div class="lbl">LOA 2026</div><div class="val">${loa>0?fmtR(loa):'—'}</div></div>
+        <div class="fin-item"><div class="lbl">Total empenhado</div><div class="val">${c.totalEmp>0?fmtR(c.totalEmp):'—'}</div></div>
+        <div class="fin-item"><div class="lbl">Total medido</div><div class="val">${fmtR(c.totalMed)}</div></div>
+        <div class="fin-item"><div class="lbl">Saldo empenho</div><div class="val ${salCor}">${fmtR(sal)}</div></div>
+        ${anual>0?`<div class="fin-item"><div class="lbl">Saldo valor anual</div><div class="val ${(anual-c.totalMed)<0?'vermelho':'verde'}">${fmtR(anual-c.totalMed)}</div></div>`:''}
+        ${loa>0?`<div class="fin-item"><div class="lbl">Saldo LOA 2026</div><div class="val ${(loa-c.totalEmp)<0?'vermelho':'verde'}">${fmtR(loa-c.totalEmp)}</div></div>`:''}
+      </div>
+      ${c.empenhos.length>0?`
+      <h3>Empenhos</h3>
+      <table>
+        <thead><tr><th>No empenho</th><th>Data</th><th class="tr">Valor</th><th>Descricao</th></tr></thead>
+        <tbody>
+          ${c.empenhos.map(e=>`<tr><td style="font-family:monospace">${e.numero}</td><td>${fmtD(e.data_empenho)}</td><td class="tr">${fmtR(e.valor)}</td><td>${e.descricao||'—'}</td></tr>`).join('')}
+          <tr style="font-weight:700;background:#e8f0fb"><td colspan="2">Total empenhado</td><td class="tr">${fmtR(c.totalEmp)}</td><td></td></tr>
+        </tbody>
+      </table>`:'<div style="font-size:10px;color:#999;margin:4px 0">Nenhum empenho registrado.</div>'}
+      ${medsComSaldo.length>0?`
+      <h3>Medicoes realizadas</h3>
+      <table>
+        <thead><tr><th>No</th><th>Mes ref.</th><th>Data</th><th class="tr">Valor medido</th><th class="tr">Saldo apos</th><th>Status</th></tr></thead>
+        <tbody>
+          ${medsComSaldo.map(m=>{
+            const sc=m.saldoApos<0?'vermelho':m.saldoApos<Number(c.valor_mensal_previsto||0)?'amarelo':'verde'
+            return `<tr><td>${m.numero}</td><td>${m.mes_referencia?m.mes_referencia.replace('-','/'):'—'}</td><td>${fmtD(m.data_medicao)}</td><td class="tr">${fmtR(m.valor)}</td><td class="tr ${sc}">${fmtR(m.saldoApos)}</td><td>${m.status}</td></tr>`
+          }).join('')}
+          <tr style="font-weight:700;background:#e8f0fb"><td colspan="3">Total medido</td><td class="tr">${fmtR(c.totalMed)}</td><td class="tr ${salCor}">${fmtR(sal)}</td><td></td></tr>
+        </tbody>
+      </table>`:'<div style="font-size:10px;color:#999;margin:4px 0">Nenhuma medicao registrada.</div>'}
+    </div>`
+  }).join('')}
+
+  <div class="rodape">
+    Ministerio Publico do Maranhao — MPMA &nbsp;|&nbsp; Relatorio emitido em ${hoje} &nbsp;|&nbsp; Sistema de Gestao de Contratos de Manutencao Predial
+  </div>
+</div>
+</body>
+</html>`
+
+  const janela = window.open('', '_blank')
+  janela.document.write(html)
+  janela.document.close()
+}
+
 function AppShell() {
   const { user } = useAuth()
   const [pagina, setPagina] = useState('dashboard')
