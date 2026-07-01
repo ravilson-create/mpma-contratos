@@ -200,15 +200,20 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
   const [fMed, setFMed] = useState({ numero: '', mes_referencia: '', data_medicao: '', valor: '', descricao: '', status: 'paga' })
   const [salvando, setSalvando] = useState(false)
 
+  const [aditivos, setAditivos] = useState([])
+  const [fAdi, setFAdi] = useState({ numero:'', sei:'', data_assinatura:'', tipo:'prazo', meses_acrescidos:12, nova_vigencia:'', valor_acrescido:'', indice_reajuste:'SINAPI', percentual_reajuste:'', valor_mensal_anterior:'', valor_mensal_novo:'', descricao:'' })
+
   async function carregar() {
-    const [{ data: c }, { data: e }, { data: m }] = await Promise.all([
+    const [{ data: c }, { data: e }, { data: m }, { data: a }] = await Promise.all([
       supabase.from('contratos').select('*').eq('id', contratoId).single(),
       supabase.from('empenhos').select('*').eq('contrato_id', contratoId).order('data_empenho'),
       supabase.from('medicoes').select('*').eq('contrato_id', contratoId).order('data_medicao').order('criado_em'),
+      supabase.from('aditivos').select('*').eq('contrato_id', contratoId).order('data_assinatura'),
     ])
     setContrato(c)
     setEmpenhos(e || [])
     setMedicoes(m || [])
+    setAditivos(a || [])
   }
 
   useEffect(() => { carregar() }, [contratoId])
@@ -216,8 +221,65 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
   const totalEmp = empenhos.reduce((a, e) => a + Number(e.valor), 0)
   const totalMed = medicoes.reduce((a, m) => a + Number(m.valor), 0)
   const saldo = totalEmp - totalMed
-  const mensal = Number(contrato?.valor_mensal_previsto || 0)
+
+  // Valor anual vigente: original + somatório de aditivos de valor
+  const valorAnualOriginal = Number(contrato?.valor_anual || 0)
+  const valorAnualAditivos = aditivos.filter(a => a.tipo === 'valor' || a.tipo === 'prazo_valor').reduce((s, a) => s + Number(a.valor_acrescido || 0), 0)
+  const valorAnualVigente = valorAnualOriginal + valorAnualAditivos
+
+  // Valor mensal vigente: aplica reajustes em ordem cronológica
+  const mensalVigente = (() => {
+    let m = Number(contrato?.valor_mensal_previsto || 0)
+    aditivos.filter(a => a.tipo === 'reajuste' && Number(a.valor_mensal_novo) > 0)
+      .sort((a, b) => new Date(a.data_assinatura) - new Date(b.data_assinatura))
+      .forEach(a => { m = Number(a.valor_mensal_novo) })
+    return m
+  })()
+
+  // Vigência vigente: aplica aditivos de prazo em ordem
+  const vigenciaVigente = (() => {
+    let d = contrato?.data_vencimento || null
+    aditivos.filter(a => (a.tipo === 'prazo' || a.tipo === 'prazo_valor') && a.nova_vigencia)
+      .sort((a, b) => new Date(a.data_assinatura) - new Date(b.data_assinatura))
+      .forEach(a => { d = a.nova_vigencia })
+    return d
+  })()
+
+  const mensal = mensalVigente || Number(contrato?.valor_mensal_previsto || 0)
+  const loa = Number(contrato?.loa_2026 || 0)
+  const saldoLoa = loa - totalEmp
+  const saldoAnual = valorAnualVigente - totalMed
   const bannerCls = saldo < 0 ? 'negativo' : saldo < mensal ? 'baixo' : 'positivo'
+
+  async function salvarAditivo() {
+    if (!fAdi.numero || !fAdi.data_assinatura || !fAdi.tipo) return alert('Informe o nº, data e tipo do aditivo.')
+    setSalvando(true)
+    const payload = {
+      contrato_id: contratoId,
+      numero: fAdi.numero,
+      sei: fAdi.sei || null,
+      data_assinatura: fAdi.data_assinatura,
+      tipo: fAdi.tipo,
+      meses_acrescidos: Number(fAdi.meses_acrescidos) || 0,
+      nova_vigencia: fAdi.nova_vigencia || null,
+      valor_acrescido: Number(fAdi.valor_acrescido) || 0,
+      indice_reajuste: (fAdi.tipo === 'reajuste') ? fAdi.indice_reajuste : null,
+      percentual_reajuste: Number(fAdi.percentual_reajuste) || 0,
+      valor_mensal_anterior: Number(fAdi.valor_mensal_anterior) || 0,
+      valor_mensal_novo: Number(fAdi.valor_mensal_novo) || 0,
+      descricao: fAdi.descricao || null,
+    }
+    const { error } = await supabase.from('aditivos').insert(payload)
+    if (error) { alert('Erro: ' + error.message); setSalvando(false); return }
+    setFAdi({ numero:'', sei:'', data_assinatura:'', tipo:'prazo', meses_acrescidos:12, nova_vigencia:'', valor_acrescido:'', indice_reajuste:'SINAPI', percentual_reajuste:'', valor_mensal_anterior:'', valor_mensal_novo:'', descricao:'' })
+    await carregar(); onAtualizado(); setSalvando(false)
+  }
+
+  async function excluirAditivo(id) {
+    if (!confirm('Excluir este aditivo? Os cálculos serão revertidos.')) return
+    await supabase.from('aditivos').delete().eq('id', id)
+    await carregar(); onAtualizado()
+  }
 
   async function salvarEmpenho() {
     if (!fEmp.numero || !fEmp.valor) return alert('Informe o nº e o valor.')
@@ -480,11 +542,17 @@ function Dashboard({ onVerContrato }) {
     const { data: cs } = await supabase.from('contratos').select('*').order('numero')
     const { data: es } = await supabase.from('empenhos').select('contrato_id, valor')
     const { data: ms } = await supabase.from('medicoes').select('contrato_id, valor')
-    const lista = (cs || []).map(c => ({
-      ...c,
-      totalEmp: (es||[]).filter(e=>e.contrato_id===c.id).reduce((a,e)=>a+Number(e.valor),0),
-      totalMed: (ms||[]).filter(m=>m.contrato_id===c.id).reduce((a,m)=>a+Number(m.valor),0),
-    }))
+    const { data: as } = await supabase.from('aditivos').select('contrato_id,tipo,valor_acrescido,percentual_reajuste,valor_mensal_novo,nova_vigencia,data_assinatura')
+    const lista = (cs || []).map(c => {
+      const adis=(as||[]).filter(a=>a.contrato_id===c.id)
+      const valorAnualAds=adis.filter(a=>a.tipo==='valor'||a.tipo==='prazo_valor').reduce((s,a)=>s+Number(a.valor_acrescido||0),0)
+      const valorAnualVig=Number(c.valor_anual||0)+valorAnualAds
+      let mensalVig=Number(c.valor_mensal_previsto||0)
+      adis.filter(a=>a.tipo==='reajuste'&&Number(a.valor_mensal_novo)>0).sort((a,b)=>new Date(a.data_assinatura)-new Date(b.data_assinatura)).forEach(a=>{mensalVig=Number(a.valor_mensal_novo)})
+      let vigVig=c.data_vencimento
+      adis.filter(a=>(a.tipo==='prazo'||a.tipo==='prazo_valor')&&a.nova_vigencia).sort((a,b)=>new Date(a.data_assinatura)-new Date(b.data_assinatura)).forEach(a=>{vigVig=a.nova_vigencia})
+      return { ...c, totalEmp:(es||[]).filter(e=>e.contrato_id===c.id).reduce((a,e)=>a+Number(e.valor),0), totalMed:(ms||[]).filter(m=>m.contrato_id===c.id).reduce((a,m)=>a+Number(m.valor),0), valorAnualVigente:valorAnualVig, mensalVigente:mensalVig, vigenciaVigente:vigVig }
+    })
     setContratos(lista); setLoading(false)
   }
   useEffect(() => { carregar() }, [])
@@ -497,8 +565,8 @@ function Dashboard({ onVerContrato }) {
   const alertas = []
   contratos.forEach(c => {
     const sal = c.totalEmp - c.totalMed
-    const dias = diasAte(c.data_vencimento)
-    const anual = Number(c.valor_anual || 0)
+    const dias = diasAte(c.vigenciaVigente || c.data_vencimento)
+    const anual = c.valorAnualVigente || Number(c.valor_anual || 0)
     const loa = Number(c.loa_2026 || 0)
     const percAnual = anual > 0 ? c.totalMed / anual * 100 : 0
     const percLoa   = loa   > 0 ? c.totalEmp / loa   * 100 : 0
@@ -616,8 +684,9 @@ function Contratos({ onVerContrato }) {
                         <td>{c.empresa}</td>
                         <td style={{maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'var(--text3)',fontSize:11}}>{c.local_unidade}</td>
                         <td style={{fontSize:11}}>
-                          {c.data_vencimento?new Date(c.data_vencimento+'T00:00:00').toLocaleDateString('pt-BR'):'—'}
-                          {c.data_vencimento&&dias>=0&&<div style={{fontSize:10,color:dias<=30?'var(--red)':dias<=120?'var(--amber)':'var(--text3)'}}>{dias}d</div>}
+                          {(c.vigenciaVigente||c.data_vencimento)?new Date((c.vigenciaVigente||c.data_vencimento)+'T00:00:00').toLocaleDateString('pt-BR'):'—'}
+                          {c.vigenciaVigente&&c.vigenciaVigente!==c.data_vencimento&&<span style={{fontSize:9,background:'#e6f1fb',color:'#0c447c',borderRadius:4,padding:'1px 4px',marginLeft:3}}>+Adit.</span>}
+                          {(c.vigenciaVigente||c.data_vencimento)&&diasAte(c.vigenciaVigente||c.data_vencimento)>=0&&<div style={{fontSize:10,color:diasAte(c.vigenciaVigente||c.data_vencimento)<=30?'var(--red)':diasAte(c.vigenciaVigente||c.data_vencimento)<=120?'var(--amber)':'var(--text3)'}}>{diasAte(c.vigenciaVigente||c.data_vencimento)}d</div>}
                         </td>
                         <td className="text-right">{c.valor_anual?fmt(c.valor_anual):'—'}</td>
                         <td className="text-right">{c.totalEmp>0?fmt(c.totalEmp):<span className="text-muted">—</span>}</td>
@@ -646,12 +715,16 @@ function Alertas() {
       const { data: cs } = await supabase.from('contratos').select('*')
       const { data: es } = await supabase.from('empenhos').select('contrato_id, valor')
       const { data: ms } = await supabase.from('medicoes').select('contrato_id, valor')
+      const { data: as2 } = await supabase.from('aditivos').select('contrato_id,tipo,valor_acrescido,nova_vigencia,data_assinatura')
       const al = []
       ;(cs||[]).forEach(c => {
         const emp=(es||[]).filter(e=>e.contrato_id===c.id).reduce((a,e)=>a+Number(e.valor),0)
         const med=(ms||[]).filter(m=>m.contrato_id===c.id).reduce((a,m)=>a+Number(m.valor),0)
-        const sal=emp-med; const dias=diasAte(c.data_vencimento)
-        const anual=Number(c.valor_anual||0); const loa=Number(c.loa_2026||0)
+        const adis2=(as2||[]).filter(a=>a.contrato_id===c.id)
+        const valorAnualAds2=adis2.filter(a=>a.tipo==='valor'||a.tipo==='prazo_valor').reduce((s,a)=>s+Number(a.valor_acrescido||0),0)
+        let vigVig2=c.data_vencimento; adis2.filter(a=>(a.tipo==='prazo'||a.tipo==='prazo_valor')&&a.nova_vigencia).sort((a,b)=>new Date(a.data_assinatura)-new Date(b.data_assinatura)).forEach(a=>{vigVig2=a.nova_vigencia})
+        const sal=emp-med; const dias=diasAte(vigVig2||c.data_vencimento)
+        const anual=(Number(c.valor_anual||0)+valorAnualAds2)||0; const loa=Number(c.loa_2026||0)
         const percAnual=anual>0?med/anual*100:0
         const percLoa=loa>0?emp/loa*100:0
         if (emp>0&&sal<0) al.push({tipo:'danger',contrato:c.numero,empresa:c.empresa,msg:`Saldo de empenho NEGATIVO: ${fmt(sal)} — reforce urgentemente`})
@@ -767,18 +840,18 @@ async function gerarRelatorio() {
   const { data: cs } = await supabase.from('contratos').select('*').order('numero')
   const { data: es } = await supabase.from('empenhos').select('*').order('data_empenho')
   const { data: ms } = await supabase.from('medicoes').select('*').order('data_medicao').order('criado_em')
+  const { data: adsr } = await supabase.from('aditivos').select('*').order('data_assinatura')
 
   const fmtR = v => Number(v||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL',minimumFractionDigits:2})
   const fmtD = d => d ? new Date(d+'T00:00:00').toLocaleDateString('pt-BR') : '—'
   const diasAteR = d => { if(!d) return 9999; return Math.ceil((new Date(d+'T00:00:00')-new Date())/864e5) }
 
-  const contratos = (cs||[]).map(c => ({
-    ...c,
-    empenhos: (es||[]).filter(e=>e.contrato_id===c.id),
-    medicoes: (ms||[]).filter(m=>m.contrato_id===c.id),
-    totalEmp: (es||[]).filter(e=>e.contrato_id===c.id).reduce((a,e)=>a+Number(e.valor),0),
-    totalMed: (ms||[]).filter(m=>m.contrato_id===c.id).reduce((a,m)=>a+Number(m.valor),0),
-  }))
+  const contratos = (cs||[]).map(c => {
+    const adisC=(adsr||[]).filter(a=>a.contrato_id===c.id)
+    const valorAnualAdsR=adisC.filter(a=>a.tipo==='valor'||a.tipo==='prazo_valor').reduce((s,a)=>s+Number(a.valor_acrescido||0),0)
+    let vigVigR=c.data_vencimento; adisC.filter(a=>(a.tipo==='prazo'||a.tipo==='prazo_valor')&&a.nova_vigencia).sort((a,b)=>new Date(a.data_assinatura)-new Date(b.data_assinatura)).forEach(a=>{vigVigR=a.nova_vigencia})
+    return { ...c, empenhos:(es||[]).filter(e=>e.contrato_id===c.id), medicoes:(ms||[]).filter(m=>m.contrato_id===c.id), aditivos:adisC, totalEmp:(es||[]).filter(e=>e.contrato_id===c.id).reduce((a,e)=>a+Number(e.valor),0), totalMed:(ms||[]).filter(m=>m.contrato_id===c.id).reduce((a,m)=>a+Number(m.valor),0), valorAnualVigente:Number(c.valor_anual||0)+valorAnualAdsR, vigenciaVigente:vigVigR }
+  })
 
   // Gerar alertas
   const alertas = []
