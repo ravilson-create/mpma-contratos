@@ -354,11 +354,11 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
             </div>
           </div>
 
-        <div className="tabs">
-  {[['geral','Dados gerais'],['empenhos','Empenhos'],['medicoes','Medições'],['evolucao','Evolução'],['aditivos','Aditivos']].map(([id,label]) => (
-    <button key={id} className={`tab-btn${aba===id?' active':''}`} onClick={() => setAba(id)}>{label}</button>
-  ))}
-</div>
+          <div className="tabs">
+            {[['geral','Dados gerais'],['empenhos','Empenhos'],['medicoes','Medições'],['evolucao','Evolução'],['aditivos','Aditivos']].map(([id,label]) => (
+              <button key={id} className={`tab-btn${aba===id?' active':''}`} onClick={() => setAba(id)}>{label}</button>
+            ))}
+          </div>
 
           {/* ABA GERAL */}
           {aba === 'geral' && (
@@ -485,6 +485,112 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
                   Total medido: {fmt(totalMed)} &nbsp;|&nbsp; Saldo atual: <span style={{ color: saldo < 0 ? 'var(--red)' : 'var(--green)' }}>{fmt(saldo)}</span>
                 </div>
               )}
+            </div>
+          )}
+
+
+          {/* ABA ADITIVOS */}
+          {aba === 'aditivos' && (
+            <div>
+              {valorAnualVigente > Number(contrato?.loa_2026||0) && Number(contrato?.loa_2026||0) > 0 && (
+                <div className="alert danger" style={{marginBottom:10}}>
+                  Valor anual vigente ({fmt(valorAnualVigente)}) supera a LOA 2026 ({fmt(Number(contrato?.loa_2026||0))}) em {fmt(valorAnualVigente - Number(contrato?.loa_2026||0))} — atualize a LOA.
+                </div>
+              )}
+              {vigenciaVigente && vigenciaVigente !== contrato?.data_vencimento && (
+                <div className="alert info" style={{marginBottom:10}}>
+                  Vigência atualizada por aditivo: {new Date(vigenciaVigente+'T00:00:00').toLocaleDateString('pt-BR')} ({diasAte(vigenciaVigente)}d restantes)
+                </div>
+              )}
+              <div style={{background:'var(--bg)',borderRadius:'var(--radius)',padding:'1rem',marginBottom:'1rem'}}>
+                <div style={{fontSize:12,fontWeight:600,marginBottom:10}}>Registrar novo aditivo</div>
+                <div className="form-grid">
+                  <div className="field"><label>Nº do aditivo *</label><input value={fAdi.numero} onChange={e=>setFAdi({...fAdi,numero:e.target.value})} placeholder="1º Aditivo" /></div>
+                  <div className="field"><label>Data de assinatura *</label><input type="date" value={fAdi.data_assinatura} onChange={e=>setFAdi({...fAdi,data_assinatura:e.target.value})} /></div>
+                  <div className="field"><label>Tipo *</label>
+                    <select value={fAdi.tipo} onChange={e=>setFAdi({...fAdi,tipo:e.target.value})}>
+                      <option value="prazo">Aditivo de prazo</option>
+                      <option value="valor">Aditivo de valor</option>
+                      <option value="reajuste">Reajuste (SINAPI/INCC)</option>
+                      <option value="prazo_valor">Prazo + Valor</option>
+                    </select>
+                  </div>
+                  <div className="field"><label>SEI do aditivo</label><input value={fAdi.sei} onChange={e=>setFAdi({...fAdi,sei:e.target.value})} placeholder="19.13.0048.000..." /></div>
+                </div>
+                {(fAdi.tipo==='prazo'||fAdi.tipo==='prazo_valor') && (
+                  <div className="form-grid" style={{marginTop:10}}>
+                    <div className="field"><label>Meses acrescidos</label><input type="number" value={fAdi.meses_acrescidos} onChange={e=>setFAdi({...fAdi,meses_acrescidos:e.target.value})} placeholder="12" /></div>
+                    <div className="field"><label>Nova data de vencimento</label><input type="date" value={fAdi.nova_vigencia} onChange={e=>setFAdi({...fAdi,nova_vigencia:e.target.value})} /></div>
+                  </div>
+                )}
+                {(fAdi.tipo==='valor'||fAdi.tipo==='prazo_valor') && (
+                  <div className="form-grid" style={{marginTop:10}}>
+                    <div className="field"><label>Valor acrescido (R$)</label><input type="number" step="0.01" value={fAdi.valor_acrescido} onChange={e=>setFAdi({...fAdi,valor_acrescido:e.target.value})} placeholder="0,00" /></div>
+                  </div>
+                )}
+                {fAdi.tipo==='reajuste' && (
+                  <div className="form-grid" style={{marginTop:10}}>
+                    <div className="field"><label>Índice</label>
+                      <select value={fAdi.indice_reajuste} onChange={e=>setFAdi({...fAdi,indice_reajuste:e.target.value})}>
+                        <option value="SINAPI">SINAPI</option>
+                        <option value="INCC">INCC</option>
+                        <option value="outro">Outro</option>
+                      </select>
+                    </div>
+                    <div className="field"><label>Percentual (%)</label>
+                      <input type="number" step="0.0001" value={fAdi.percentual_reajuste}
+                        onChange={e=>{
+                          const perc=Number(e.target.value)
+                          const ant=Number(fAdi.valor_mensal_anterior)||mensal
+                          const novo=ant*(1+perc/100)
+                          setFAdi({...fAdi,percentual_reajuste:e.target.value,valor_mensal_anterior:ant.toFixed(2),valor_mensal_novo:novo.toFixed(2)})
+                        }} placeholder="5.00" />
+                    </div>
+                    <div className="field"><label>Valor mensal anterior (R$)</label><input type="number" step="0.01" value={fAdi.valor_mensal_anterior} onChange={e=>setFAdi({...fAdi,valor_mensal_anterior:e.target.value})} /></div>
+                    <div className="field"><label>Valor mensal novo (R$)</label><input type="number" step="0.01" value={fAdi.valor_mensal_novo} onChange={e=>setFAdi({...fAdi,valor_mensal_novo:e.target.value})} /></div>
+                  </div>
+                )}
+                <div className="form-grid full" style={{marginTop:10}}>
+                  <div className="field"><label>Descrição</label><input value={fAdi.descricao} onChange={e=>setFAdi({...fAdi,descricao:e.target.value})} placeholder="Ex: Renovação anual com reajuste SINAPI 4,85%" /></div>
+                </div>
+                <div className="btn-row"><button className="btn primary" onClick={salvarAditivo} disabled={salvando}>Salvar aditivo</button></div>
+              </div>
+              {aditivos.length===0
+                ? <div style={{textAlign:'center',padding:'1.5rem',color:'var(--text3)'}}>Nenhum aditivo registrado.</div>
+                : <>
+                  <div style={{overflowX:'auto'}}>
+                    <table>
+                      <thead><tr><th>Nº</th><th>Data</th><th>Tipo</th><th>SEI</th><th className="text-right">Valor acrescido</th><th>Nova vigência</th><th>Reajuste</th><th>Descrição</th><th></th></tr></thead>
+                      <tbody>
+                        {aditivos.map(a=>(
+                          <tr key={a.id}>
+                            <td style={{fontWeight:600}}>{a.numero}</td>
+                            <td>{a.data_assinatura?new Date(a.data_assinatura+'T00:00:00').toLocaleDateString('pt-BR'):'—'}</td>
+                            <td><span className={`badge ${a.tipo==='reajuste'?'info':a.tipo.includes('valor')?'ativo':'alerta'}`}>{a.tipo==='prazo'?'Prazo':a.tipo==='valor'?'Valor':a.tipo==='reajuste'?'Reajuste':'Prazo+Valor'}</span></td>
+                            <td style={{fontFamily:'monospace',fontSize:10}}>{a.sei||'—'}</td>
+                            <td className="text-right">{Number(a.valor_acrescido)>0?fmt(a.valor_acrescido):'—'}</td>
+                            <td>{a.nova_vigencia?new Date(a.nova_vigencia+'T00:00:00').toLocaleDateString('pt-BR'):'—'}</td>
+                            <td>{a.indice_reajuste&&Number(a.percentual_reajuste)>0?`${a.indice_reajuste} ${Number(a.percentual_reajuste).toFixed(2)}%`:'—'}</td>
+                            <td style={{color:'var(--text3)',fontSize:11}}>{a.descricao||'—'}</td>
+                            <td><button className="btn danger" style={{padding:'2px 8px',fontSize:11}} onClick={()=>excluirAditivo(a.id)}>Excluir</button></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div style={{marginTop:12,padding:'10px 14px',background:'var(--bg)',borderRadius:'var(--radius)',fontSize:12}}>
+                    <div style={{fontWeight:600,marginBottom:6}}>Resumo vigente</div>
+                    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}}>
+                      <div><span style={{color:'var(--text3)'}}>Valor anual original: </span><strong>{fmt(valorAnualOriginal)}</strong></div>
+                      <div><span style={{color:'var(--text3)'}}>Aditivos de valor: </span><strong style={{color:'var(--blue-text)'}}>+{fmt(valorAnualAditivos)}</strong></div>
+                      <div><span style={{color:'var(--text3)'}}>Valor anual vigente: </span><strong style={{color:'var(--green-text)'}}>{fmt(valorAnualVigente)}</strong></div>
+                      <div><span style={{color:'var(--text3)'}}>Mensal vigente: </span><strong>{fmt(mensal)}</strong></div>
+                      <div><span style={{color:'var(--text3)'}}>Vigência vigente: </span><strong>{vigenciaVigente?new Date(vigenciaVigente+'T00:00:00').toLocaleDateString('pt-BR'):'—'}</strong></div>
+                      <div><span style={{color:'var(--text3)'}}>LOA 2026: </span><strong style={{color:valorAnualVigente>Number(contrato?.loa_2026||0)&&Number(contrato?.loa_2026||0)>0?'var(--red)':'inherit'}}>{fmt(contrato?.loa_2026)}</strong></div>
+                    </div>
+                  </div>
+                </>
+              }
             </div>
           )}
 
