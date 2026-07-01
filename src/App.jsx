@@ -354,11 +354,11 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
             </div>
           </div>
 
-          <div className="tabs">
-            {[['geral','Dados gerais'],['empenhos','Empenhos'],['medicoes','Medições'],['evolucao','Evolução']].map(([id,label]) => (
-              <button key={id} className={`tab-btn${aba===id?' active':''}`} onClick={() => setAba(id)}>{label}</button>
-            ))}
-          </div>
+        <div className="tabs">
+  {[['geral','Dados gerais'],['empenhos','Empenhos'],['medicoes','Medições'],['evolucao','Evolução'],['aditivos','Aditivos']].map(([id,label]) => (
+    <button key={id} className={`tab-btn${aba===id?' active':''}`} onClick={() => setAba(id)}>{label}</button>
+  ))}
+</div>
 
           {/* ABA GERAL */}
           {aba === 'geral' && (
