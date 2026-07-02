@@ -11,8 +11,9 @@ const supabase = createClient(
 
 // ─── AUTH LOCAL ──────────────────────────────────────────────
 const USUARIOS = [
+  { email: 'coea@mpma.mp.br', senha: 'coea@mpma',  nome: 'COEA', perfil: 'visualizador' },
+  { email: 'coea@mpma.mp.br', senha: 'Mpma@coea',  nome: 'Administrador COEA', perfil: 'admin' },
   { email: 'ravilson@mpma.mp.br', senha: 'Mpma@2026', nome: 'Ravilson', perfil: 'admin' },
-  { email: 'admin@mpma.mp.br',    senha: 'Mpma@2026', nome: 'Administrador', perfil: 'admin' },
 ]
 const AuthCtx = createContext(null)
 function AuthProvider({ children }) {
@@ -70,7 +71,7 @@ function Login() {
 }
 
 // ─── SIDEBAR ─────────────────────────────────────────────────
-function Sidebar({ pagina, setPagina, qtdAlertas }) {
+function Sidebar({ pagina, setPagina, qtdAlertas, area, mudarArea }) {
   const { user, logout } = useAuth()
   const itens = [
     { id: 'dashboard', label: 'Dashboard' },
@@ -82,7 +83,16 @@ function Sidebar({ pagina, setPagina, qtdAlertas }) {
     <aside className="sidebar">
       <div className="sidebar-logo">
         <span>MPMA</span>
-        <small>Contratos de Manutenção</small>
+        <small>Gestão de Contratos</small>
+      </div>
+      <div style={{ padding: '0 12px 12px', borderBottom: '1px solid var(--border)', marginBottom: 8 }}>
+        <div style={{ fontSize: 10, color: 'var(--text3)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: .5 }}>Área</div>
+        <button className={`area-btn${area==='manutencao'?' active':''}`} onClick={() => mudarArea('manutencao')}>
+          Manutenção Predial
+        </button>
+        <button className={`area-btn${area==='fiscalizacao'?' active':''}`} onClick={() => mudarArea('fiscalizacao')}>
+          Fiscalização de Obras
+        </button>
       </div>
       <nav style={{ flex: 1 }}>
         {itens.map(i => (
@@ -93,7 +103,7 @@ function Sidebar({ pagina, setPagina, qtdAlertas }) {
         ))}
       </nav>
       <div style={{ padding: '.5rem 1rem 0' }}>
-        <button className='nav-item' style={{width:'100%'}} onClick={gerarRelatorio}>📄 Gerar Relatório</button>
+        <button className='nav-item' style={{width:'100%'}} onClick={() => gerarRelatorio(area)}>📄 Gerar Relatório</button>
       </div>
       <div style={{ padding: '1rem', borderTop: '1px solid var(--border)' }}>
         <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 8 }}>
@@ -107,8 +117,8 @@ function Sidebar({ pagina, setPagina, qtdAlertas }) {
 }
 
 // ─── MODAL CONTRATO ──────────────────────────────────────────
-function ModalContrato({ contrato, onClose, onSalvo }) {
-  const vazio = { numero: '', empresa: '', sei_contrato: '', sei_pagamentos: '', local_unidade: '', objeto: '', gestor_nome: '', fiscal_nome: '', data_vencimento: '', valor_anual: '', valor_mensal_previsto: '', loa_2026: '', observacoes: '' }
+function ModalContrato({ contrato, onClose, onSalvo, areaAtual }) {
+  const vazio = { numero: '', empresa: '', sei_contrato: '', sei_pagamentos: '', local_unidade: '', objeto: '', gestor_nome: '', fiscal_nome: '', data_vencimento: '', valor_anual: '', valor_mensal_previsto: '', loa_2026: '', observacoes: '', area: areaAtual || 'manutencao' }
   const [f, setF] = useState(contrato ? { ...vazio, ...contrato, valor_anual: contrato.valor_anual || '', valor_mensal_previsto: contrato.valor_mensal_previsto || '', loa_2026: contrato.loa_2026 || '' } : vazio)
   const [salvando, setSalvando] = useState(false)
   const upd = (k, v) => setF(p => ({ ...p, [k]: v }))
@@ -119,6 +129,7 @@ function ModalContrato({ contrato, onClose, onSalvo }) {
     const payload = {
       numero: f.numero.trim(),
       empresa: f.empresa.trim(),
+      area: contrato?.area || areaAtual || 'manutencao',
       sei_contrato: f.sei_contrato || null,
       sei_pagamentos: f.sei_pagamentos || null,
       local_unidade: f.local_unidade || null,
@@ -191,6 +202,8 @@ function ModalContrato({ contrato, onClose, onSalvo }) {
 
 // ─── MODAL DETALHE ───────────────────────────────────────────
 function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
+  const { user } = useAuth()
+  const isAdmin = user?.perfil === 'admin'
   const [contrato, setContrato] = useState(null)
   const [empenhos, setEmpenhos] = useState([])
   const [medicoes, setMedicoes] = useState([])
@@ -334,11 +347,16 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
               <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 2 }}>{contrato.local_unidade}</div>
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
-              <button className="btn" onClick={() => setEditando(true)}>✏ Editar</button>
+              {isAdmin && <button className="btn" onClick={() => setEditando(true)}>✏ Editar</button>}
               <button className="btn" onClick={onClose}>✕</button>
             </div>
           </div>
 
+          {!isAdmin && (
+            <div className="alert info" style={{marginBottom:10, fontSize:11}}>
+              Modo visualização — apenas administradores podem editar empenhos, medições e aditivos.
+            </div>
+          )}
           {/* Banner saldo */}
           <div className={`saldo-banner ${bannerCls}`}>
             <div style={{ fontSize: 22 }}>{saldo < 0 ? '⊖' : saldo < mensal ? '⚠' : '✓'}</div>
@@ -389,7 +407,7 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
           {/* ABA EMPENHOS */}
           {aba === 'empenhos' && (
             <div>
-              <div style={{ background: 'var(--bg)', borderRadius: 'var(--radius)', padding: '1rem', marginBottom: '1rem' }}>
+              {isAdmin && <div style={{ background: 'var(--bg)', borderRadius: 'var(--radius)', padding: '1rem', marginBottom: '1rem' }}>
                 <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 10 }}>Registrar novo empenho</div>
                 <div className="form-grid">
                   <div className="field"><label>Nº do empenho *</label><input value={fEmp.numero} onChange={e => setFEmp({...fEmp,numero:e.target.value})} placeholder="2026NE000001" /></div>
@@ -398,7 +416,7 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
                   <div className="field"><label>Descrição</label><input value={fEmp.descricao} onChange={e => setFEmp({...fEmp,descricao:e.target.value})} /></div>
                 </div>
                 <div className="btn-row"><button className="btn primary" onClick={salvarEmpenho} disabled={salvando}>Salvar empenho</button></div>
-              </div>
+              </div>}
               <table>
                 <thead><tr><th>Nº empenho</th><th>Data</th><th className="text-right">Valor</th><th>Descrição</th><th></th></tr></thead>
                 <tbody>
@@ -410,7 +428,7 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
                         <td>{e.data_empenho ? new Date(e.data_empenho+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</td>
                         <td className="text-right" style={{ fontWeight:500 }}>{fmt(e.valor)}</td>
                         <td style={{ color:'var(--text3)' }}>{e.descricao||'—'}</td>
-                        <td><button className="btn danger" style={{ padding:'2px 8px',fontSize:11 }} onClick={() => excluirEmpenho(e.id)}>Excluir</button></td>
+                        <td>{isAdmin && <button className="btn danger" style={{ padding:'2px 8px',fontSize:11 }} onClick={() => excluirEmpenho(e.id)}>Excluir</button>}</td>
                       </tr>
                     ))}
                 </tbody>
@@ -426,7 +444,7 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
           {/* ABA MEDIÇÕES */}
           {aba === 'medicoes' && (
             <div>
-              <div style={{ background:'var(--bg)', borderRadius:'var(--radius)', padding:'1rem', marginBottom:'1rem' }}>
+              {isAdmin && <div style={{ background:'var(--bg)', borderRadius:'var(--radius)', padding:'1rem', marginBottom:'1rem' }}>
                 <div style={{ fontSize:12, fontWeight:600, marginBottom:10 }}>Registrar nova medição</div>
                 <div className="form-grid">
                   <div className="field"><label>Nº da medição *</label><input value={fMed.numero} onChange={e => setFMed({...fMed,numero:e.target.value})} placeholder="01" /></div>
@@ -449,7 +467,7 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
                   </div>
                 )}
                 <div className="btn-row"><button className="btn primary" onClick={salvarMedicao} disabled={salvando}>Salvar medição</button></div>
-              </div>
+              </div>}
               <div style={{ overflowX:'auto' }}>
                 <table>
                   <thead>
@@ -474,7 +492,7 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
                           </td>
                           <td><span className={`badge ${m.status}`}>{m.status}</span></td>
                           <td style={{ color:'var(--text3)', fontSize:11 }}>{m.descricao||'—'}</td>
-                          <td><button className="btn danger" style={{ padding:'2px 8px',fontSize:11 }} onClick={() => excluirMedicao(m.id)}>Excluir</button></td>
+                          <td>{isAdmin && <button className="btn danger" style={{ padding:'2px 8px',fontSize:11 }} onClick={() => excluirMedicao(m.id)}>Excluir</button>}</td>
                         </tr>
                       ))}
                   </tbody>
@@ -502,7 +520,7 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
                   Vigência atualizada por aditivo: {new Date(vigenciaVigente+'T00:00:00').toLocaleDateString('pt-BR')} ({diasAte(vigenciaVigente)}d restantes)
                 </div>
               )}
-              <div style={{background:'var(--bg)',borderRadius:'var(--radius)',padding:'1rem',marginBottom:'1rem'}}>
+              {isAdmin && <div style={{background:'var(--bg)',borderRadius:'var(--radius)',padding:'1rem',marginBottom:'1rem'}}>
                 <div style={{fontSize:12,fontWeight:600,marginBottom:10}}>Registrar novo aditivo</div>
                 <div className="form-grid">
                   <div className="field"><label>Nº do aditivo *</label><input value={fAdi.numero} onChange={e=>setFAdi({...fAdi,numero:e.target.value})} placeholder="1º Aditivo" /></div>
@@ -554,7 +572,7 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
                   <div className="field"><label>Descrição</label><input value={fAdi.descricao} onChange={e=>setFAdi({...fAdi,descricao:e.target.value})} placeholder="Ex: Renovação anual com reajuste SINAPI 4,85%" /></div>
                 </div>
                 <div className="btn-row"><button className="btn primary" onClick={salvarAditivo} disabled={salvando}>Salvar aditivo</button></div>
-              </div>
+              </div>}
               {aditivos.length===0
                 ? <div style={{textAlign:'center',padding:'1.5rem',color:'var(--text3)'}}>Nenhum aditivo registrado.</div>
                 : <>
@@ -572,7 +590,7 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
                             <td>{a.nova_vigencia?new Date(a.nova_vigencia+'T00:00:00').toLocaleDateString('pt-BR'):'—'}</td>
                             <td>{a.indice_reajuste&&Number(a.percentual_reajuste)>0?`${a.indice_reajuste} ${Number(a.percentual_reajuste).toFixed(2)}%`:'—'}</td>
                             <td style={{color:'var(--text3)',fontSize:11}}>{a.descricao||'—'}</td>
-                            <td><button className="btn danger" style={{padding:'2px 8px',fontSize:11}} onClick={()=>excluirAditivo(a.id)}>Excluir</button></td>
+                            <td>{isAdmin && <button className="btn danger" style={{padding:'2px 8px',fontSize:11}} onClick={()=>excluirAditivo(a.id)}>Excluir</button>}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -640,12 +658,12 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
 }
 
 // ─── DASHBOARD ───────────────────────────────────────────────
-function Dashboard({ onVerContrato }) {
+function Dashboard({ onVerContrato, area }) {
   const [contratos, setContratos] = useState([])
   const [loading, setLoading] = useState(true)
 
   async function carregar() {
-    const { data: cs } = await supabase.from('contratos').select('*').order('numero')
+    const { data: cs } = await supabase.from('contratos').select('*').eq('area', area).order('numero')
     const { data: es } = await supabase.from('empenhos').select('contrato_id, valor')
     const { data: ms } = await supabase.from('medicoes').select('contrato_id, valor')
     const { data: as } = await supabase.from('aditivos').select('contrato_id,tipo,valor_acrescido,percentual_reajuste,valor_mensal_novo,nova_vigencia,data_assinatura')
@@ -694,7 +712,7 @@ function Dashboard({ onVerContrato }) {
 
   return (
     <div>
-      <div className="page-header"><div><h1>Dashboard</h1><p>Gestão de contratos · MPMA 2026</p></div></div>
+      <div className="page-header"><div><h1>Dashboard</h1><p>{area==='fiscalizacao'?'Fiscalização de Obras':'Manutenção Predial'} · MPMA 2026</p></div></div>
       <div className="metric-grid">
         <div className="metric-card"><div className="lbl">Contratos ativos</div><div className="val ok">{contratos.length}</div></div>
         <div className="metric-card"><div className="lbl">Total empenhado</div><div className="val" style={{fontSize:14}}>{fmt(tEmp)}</div></div>
@@ -740,7 +758,9 @@ function Dashboard({ onVerContrato }) {
 }
 
 // ─── CONTRATOS ───────────────────────────────────────────────
-function Contratos({ onVerContrato }) {
+function Contratos({ onVerContrato, area }) {
+  const { user } = useAuth()
+  const isAdmin = user?.perfil === 'admin'
   const [contratos, setContratos] = useState([])
   const [loading, setLoading] = useState(true)
   const [busca, setBusca] = useState('')
@@ -764,8 +784,8 @@ function Contratos({ onVerContrato }) {
   return (
     <div>
       <div className="page-header">
-        <div><h1>Contratos</h1><p>{contratos.length} contratos cadastrados</p></div>
-        <button className="btn primary" onClick={() => setModalNovo(true)}>+ Novo contrato</button>
+        <div><h1>Contratos — {area==='fiscalizacao'?'Fiscalização de Obras':'Manutenção Predial'}</h1><p>{contratos.length} contratos cadastrados</p></div>
+        {isAdmin && <button className="btn primary" onClick={() => setModalNovo(true)}>+ Novo contrato</button>}
       </div>
       <div className="search-row">
         <input placeholder="Buscar número, empresa, local..." value={busca} onChange={e => setBusca(e.target.value)} />
@@ -807,18 +827,18 @@ function Contratos({ onVerContrato }) {
           </div>
         </div>
       )}
-      {modalNovo && <ModalContrato onClose={() => setModalNovo(false)} onSalvo={() => { setModalNovo(false); carregar() }} />}
+      {modalNovo && <ModalContrato areaAtual={area} onClose={() => setModalNovo(false)} onSalvo={() => { setModalNovo(false); carregar() }} />}
     </div>
   )
 }
 
 // ─── ALERTAS ─────────────────────────────────────────────────
-function Alertas() {
+function Alertas({ area }) {
   const [alertas, setAlertas] = useState([])
   const [loading, setLoading] = useState(true)
   useEffect(() => {
     async function carregar() {
-      const { data: cs } = await supabase.from('contratos').select('*')
+      const { data: cs } = await supabase.from('contratos').select('*').eq('area', area)
       const { data: es } = await supabase.from('empenhos').select('contrato_id, valor')
       const { data: ms } = await supabase.from('medicoes').select('contrato_id, valor')
       const { data: as2 } = await supabase.from('aditivos').select('contrato_id,tipo,valor_acrescido,nova_vigencia,data_assinatura')
@@ -866,12 +886,12 @@ function Alertas() {
 }
 
 // ─── ORÇAMENTO ───────────────────────────────────────────────
-function Orcamento() {
+function Orcamento({ area }) {
   const [contratos, setContratos] = useState([])
   const [loading, setLoading] = useState(true)
   useEffect(() => {
     async function carregar() {
-      const { data: cs } = await supabase.from('contratos').select('*').order('numero')
+      const { data: cs } = await supabase.from('contratos').select('*').eq('area', area).order('numero')
       const { data: es } = await supabase.from('empenhos').select('contrato_id, valor')
       const { data: ms } = await supabase.from('medicoes').select('contrato_id, valor')
       setContratos((cs||[]).map(c=>({
@@ -942,8 +962,8 @@ function Orcamento() {
 // ─── APP SHELL ───────────────────────────────────────────────
 
 // ─── RELATÓRIO ───────────────────────────────────────────────
-async function gerarRelatorio() {
-  const { data: cs } = await supabase.from('contratos').select('*').order('numero')
+async function gerarRelatorio(area) {
+  const { data: cs } = await supabase.from('contratos').select('*').eq('area', area||'manutencao').order('numero')
   const { data: es } = await supabase.from('empenhos').select('*').order('data_empenho')
   const { data: ms } = await supabase.from('medicoes').select('*').order('data_medicao').order('criado_em')
   const { data: adsr } = await supabase.from('aditivos').select('*').order('data_assinatura')
@@ -1040,7 +1060,7 @@ async function gerarRelatorio() {
   </div>
 
   <h1>Ministerio Publico do Maranhao — MPMA</h1>
-  <div class="subtitulo">Relatorio de Contratos de Manutencao Predial</div>
+  <div class="subtitulo">Relatorio de Contratos — ${area==='fiscalizacao'?'Fiscalizacao de Obras':'Manutencao Predial'}</div>
   <div class="data-rel">Emitido em: ${hoje} &nbsp;|&nbsp; Total de contratos: ${contratos.length}</div>
 
   <h2>Resumo Financeiro Consolidado</h2>
@@ -1136,15 +1156,17 @@ async function gerarRelatorio() {
 
 function AppShell() {
   const { user } = useAuth()
+  const [area, setArea] = useState(() => localStorage.getItem('mpma_area') || 'manutencao')
   const [pagina, setPagina] = useState('dashboard')
   const [contratoSel, setContratoSel] = useState(null)
+  function mudarArea(a) { setArea(a); localStorage.setItem('mpma_area', a); setContratoSel(null) }
   const [qtdAlertas, setQtdAlertas] = useState(0)
   const [tick, setTick] = useState(0)
 
   useEffect(() => {
     if (!user) return
     async function contarAlertas() {
-      const { data: cs } = await supabase.from('contratos').select('id,data_vencimento,valor_mensal_previsto')
+      const { data: cs } = await supabase.from('contratos').select('id,data_vencimento,valor_mensal_previsto').eq('area', area)
       const { data: es } = await supabase.from('empenhos').select('contrato_id,valor')
       const { data: ms } = await supabase.from('medicoes').select('contrato_id,valor')
       let n = 0
@@ -1158,7 +1180,7 @@ function AppShell() {
       setQtdAlertas(n)
     }
     contarAlertas()
-  }, [user, tick])
+  }, [user, tick, area])
 
   if (!user) return <Login />
 
@@ -1167,18 +1189,30 @@ function AppShell() {
 
   return (
     <div className="layout">
-      <Sidebar pagina={pagina} setPagina={setPagina} qtdAlertas={qtdAlertas} />
+      <Sidebar pagina={pagina} setPagina={setPagina} qtdAlertas={qtdAlertas} area={area} mudarArea={mudarArea} />
       <main className="main">
-        {pagina==='dashboard' && <Dashboard onVerContrato={handleVerContrato} />}
-        {pagina==='contratos' && <Contratos onVerContrato={handleVerContrato} />}
-        {pagina==='alertas'   && <Alertas />}
-        {pagina==='orcamento' && <Orcamento />}
+        {pagina==='dashboard' && <Dashboard onVerContrato={handleVerContrato} area={area} key={'d'+area+tick} />}
+        {pagina==='contratos' && <Contratos onVerContrato={handleVerContrato} area={area} key={'c'+area+tick} />}
+        {pagina==='alertas'   && <Alertas area={area} key={'a'+area+tick} />}
+        {pagina==='orcamento' && <Orcamento area={area} key={'o'+area+tick} />}
       </main>
       {contratoSel && <ModalDetalhe contratoId={contratoSel} onClose={() => setContratoSel(null)} onAtualizado={handleAtualizado} />}
     </div>
   )
 }
 
+const areaStyles = `
+.area-btn { display:block; width:100%; text-align:left; padding:7px 10px; margin-bottom:4px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); color:var(--text2); cursor:pointer; font-size:12px; font-family:inherit; }
+.area-btn:hover { background:var(--bg); }
+.area-btn.active { background:var(--blue); color:#fff; border-color:var(--blue); font-weight:600; }
+`
+
 export default function App() {
+  useEffect(() => {
+    const s = document.createElement('style')
+    s.textContent = areaStyles
+    document.head.appendChild(s)
+    return () => { document.head.removeChild(s) }
+  }, [])
   return <AuthProvider><AppShell /></AuthProvider>
 }
