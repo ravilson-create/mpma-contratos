@@ -767,7 +767,7 @@ function Contratos({ onVerContrato, area }) {
   const [modalNovo, setModalNovo] = useState(false)
 
   async function carregar() {
-    const { data: cs } = await supabase.from('contratos').select('*').order('numero')
+    const { data: cs } = await supabase.from('contratos').select('*').eq('area', area).order('numero')
     const { data: es } = await supabase.from('empenhos').select('contrato_id, valor')
     const { data: ms } = await supabase.from('medicoes').select('contrato_id, valor')
     setContratos((cs||[]).map(c=>({
