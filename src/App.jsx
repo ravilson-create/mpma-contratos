@@ -212,6 +212,9 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
   const [fEmp, setFEmp] = useState({ numero: '', data_empenho: '', valor: '', descricao: '' })
   const [fMed, setFMed] = useState({ numero: '', mes_referencia: '', data_medicao: '', valor: '', descricao: '', status: 'paga' })
   const [salvando, setSalvando] = useState(false)
+  const [editandoEmpId, setEditandoEmpId] = useState(null)
+  const [editandoMedId, setEditandoMedId] = useState(null)
+  const [editandoAdiId, setEditandoAdiId] = useState(null)
 
   const [aditivos, setAditivos] = useState([])
   const [fAdi, setFAdi] = useState({ numero:'', sei:'', data_assinatura:'', tipo:'prazo', meses_acrescidos:12, nova_vigencia:'', valor_acrescido:'', indice_reajuste:'SINAPI', percentual_reajuste:'', valor_mensal_anterior:'', valor_mensal_novo:'', descricao:'' })
@@ -264,6 +267,22 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
   const saldoAnual = valorAnualVigente - totalMed
   const bannerCls = saldo < 0 ? 'negativo' : saldo < mensal ? 'baixo' : 'positivo'
 
+  function editarAditivo(a) {
+    setEditandoAdiId(a.id)
+    setFAdi({
+      numero: a.numero, sei: a.sei || '', data_assinatura: a.data_assinatura || '', tipo: a.tipo,
+      meses_acrescidos: a.meses_acrescidos || 12, nova_vigencia: a.nova_vigencia || '',
+      valor_acrescido: a.valor_acrescido || '', indice_reajuste: a.indice_reajuste || 'SINAPI',
+      percentual_reajuste: a.percentual_reajuste || '', valor_mensal_anterior: a.valor_mensal_anterior || '',
+      valor_mensal_novo: a.valor_mensal_novo || '', descricao: a.descricao || ''
+    })
+  }
+
+  function cancelarEdicaoAditivo() {
+    setEditandoAdiId(null)
+    setFAdi({ numero:'', sei:'', data_assinatura:'', tipo:'prazo', meses_acrescidos:12, nova_vigencia:'', valor_acrescido:'', indice_reajuste:'SINAPI', percentual_reajuste:'', valor_mensal_anterior:'', valor_mensal_novo:'', descricao:'' })
+  }
+
   async function salvarAditivo() {
     if (!fAdi.numero || !fAdi.data_assinatura || !fAdi.tipo) return alert('Informe o nº, data e tipo do aditivo.')
     setSalvando(true)
@@ -282,45 +301,79 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
       valor_mensal_novo: Number(fAdi.valor_mensal_novo) || 0,
       descricao: fAdi.descricao || null,
     }
-    const { error } = await supabase.from('aditivos').insert(payload)
+    const { error } = editandoAdiId
+      ? await supabase.from('aditivos').update(payload).eq('id', editandoAdiId)
+      : await supabase.from('aditivos').insert(payload)
     if (error) { alert('Erro: ' + error.message); setSalvando(false); return }
     setFAdi({ numero:'', sei:'', data_assinatura:'', tipo:'prazo', meses_acrescidos:12, nova_vigencia:'', valor_acrescido:'', indice_reajuste:'SINAPI', percentual_reajuste:'', valor_mensal_anterior:'', valor_mensal_novo:'', descricao:'' })
+    setEditandoAdiId(null)
     await carregar(); onAtualizado(); setSalvando(false)
   }
 
   async function excluirAditivo(id) {
     if (!confirm('Excluir este aditivo? Os cálculos serão revertidos.')) return
     await supabase.from('aditivos').delete().eq('id', id)
+    if (editandoAdiId === id) cancelarEdicaoAditivo()
     await carregar(); onAtualizado()
+  }
+
+  function editarEmpenho(e) {
+    setEditandoEmpId(e.id)
+    setFEmp({ numero: e.numero, data_empenho: e.data_empenho || '', valor: e.valor, descricao: e.descricao || '' })
+  }
+
+  function cancelarEdicaoEmpenho() {
+    setEditandoEmpId(null)
+    setFEmp({ numero: '', data_empenho: '', valor: '', descricao: '' })
   }
 
   async function salvarEmpenho() {
     if (!fEmp.numero || !fEmp.valor) return alert('Informe o nº e o valor.')
     setSalvando(true)
-    const { error } = await supabase.from('empenhos').insert({ ...fEmp, valor: Number(fEmp.valor), contrato_id: contratoId, data_empenho: fEmp.data_empenho || null })
+    const payload = { ...fEmp, valor: Number(fEmp.valor), contrato_id: contratoId, data_empenho: fEmp.data_empenho || null }
+    const { error } = editandoEmpId
+      ? await supabase.from('empenhos').update(payload).eq('id', editandoEmpId)
+      : await supabase.from('empenhos').insert(payload)
     if (error) { alert('Erro: ' + error.message); setSalvando(false); return }
     setFEmp({ numero: '', data_empenho: '', valor: '', descricao: '' })
+    setEditandoEmpId(null)
     await carregar(); onAtualizado(); setSalvando(false)
   }
 
   async function excluirEmpenho(id) {
     if (!confirm('Excluir este empenho?')) return
     await supabase.from('empenhos').delete().eq('id', id)
+    if (editandoEmpId === id) cancelarEdicaoEmpenho()
     await carregar(); onAtualizado()
+  }
+
+  function editarMedicao(m) {
+    setEditandoMedId(m.id)
+    setFMed({ numero: m.numero, mes_referencia: m.mes_referencia || '', data_medicao: m.data_medicao || '', valor: m.valor, descricao: m.descricao || '', status: m.status || 'paga' })
+  }
+
+  function cancelarEdicaoMedicao() {
+    setEditandoMedId(null)
+    setFMed({ numero: '', mes_referencia: '', data_medicao: '', valor: '', descricao: '', status: 'paga' })
   }
 
   async function salvarMedicao() {
     if (!fMed.numero || !fMed.valor) return alert('Informe o nº e o valor.')
     setSalvando(true)
-    const { error } = await supabase.from('medicoes').insert({ ...fMed, valor: Number(fMed.valor), contrato_id: contratoId, data_medicao: fMed.data_medicao || null })
+    const payload = { ...fMed, valor: Number(fMed.valor), contrato_id: contratoId, data_medicao: fMed.data_medicao || null }
+    const { error } = editandoMedId
+      ? await supabase.from('medicoes').update(payload).eq('id', editandoMedId)
+      : await supabase.from('medicoes').insert(payload)
     if (error) { alert('Erro: ' + error.message); setSalvando(false); return }
     setFMed({ numero: '', mes_referencia: '', data_medicao: '', valor: '', descricao: '', status: 'paga' })
+    setEditandoMedId(null)
     await carregar(); onAtualizado(); setSalvando(false)
   }
 
   async function excluirMedicao(id) {
     if (!confirm('Excluir esta medição?')) return
     await supabase.from('medicoes').delete().eq('id', id)
+    if (editandoMedId === id) cancelarEdicaoMedicao()
     await carregar(); onAtualizado()
   }
 
@@ -408,14 +461,17 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
           {aba === 'empenhos' && (
             <div>
               {isAdmin && <div style={{ background: 'var(--bg)', borderRadius: 'var(--radius)', padding: '1rem', marginBottom: '1rem' }}>
-                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 10 }}>Registrar novo empenho</div>
+                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 10 }}>{editandoEmpId ? 'Editando empenho' : 'Registrar novo empenho'}</div>
                 <div className="form-grid">
                   <div className="field"><label>Nº do empenho *</label><input value={fEmp.numero} onChange={e => setFEmp({...fEmp,numero:e.target.value})} placeholder="2026NE000001" /></div>
                   <div className="field"><label>Data</label><input type="date" value={fEmp.data_empenho} onChange={e => setFEmp({...fEmp,data_empenho:e.target.value})} /></div>
                   <div className="field"><label>Valor (R$) *</label><input type="number" step="0.01" value={fEmp.valor} onChange={e => setFEmp({...fEmp,valor:e.target.value})} placeholder="0,00" /></div>
                   <div className="field"><label>Descrição</label><input value={fEmp.descricao} onChange={e => setFEmp({...fEmp,descricao:e.target.value})} /></div>
                 </div>
-                <div className="btn-row"><button className="btn primary" onClick={salvarEmpenho} disabled={salvando}>Salvar empenho</button></div>
+                <div className="btn-row">
+                  {editandoEmpId && <button className="btn" onClick={cancelarEdicaoEmpenho}>Cancelar</button>}
+                  <button className="btn primary" onClick={salvarEmpenho} disabled={salvando}>{editandoEmpId ? 'Atualizar empenho' : 'Salvar empenho'}</button>
+                </div>
               </div>}
               <table>
                 <thead><tr><th>Nº empenho</th><th>Data</th><th className="text-right">Valor</th><th>Descrição</th><th></th></tr></thead>
@@ -428,7 +484,7 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
                         <td>{e.data_empenho ? new Date(e.data_empenho+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</td>
                         <td className="text-right" style={{ fontWeight:500 }}>{fmt(e.valor)}</td>
                         <td style={{ color:'var(--text3)' }}>{e.descricao||'—'}</td>
-                        <td>{isAdmin && <button className="btn danger" style={{ padding:'2px 8px',fontSize:11 }} onClick={() => excluirEmpenho(e.id)}>Excluir</button>}</td>
+                        <td>{isAdmin && <div style={{display:'flex',gap:4}}><button className="btn" style={{ padding:'2px 8px',fontSize:11 }} onClick={() => editarEmpenho(e)}>Editar</button><button className="btn danger" style={{ padding:'2px 8px',fontSize:11 }} onClick={() => excluirEmpenho(e.id)}>Excluir</button></div>}</td>
                       </tr>
                     ))}
                 </tbody>
@@ -445,7 +501,7 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
           {aba === 'medicoes' && (
             <div>
               {isAdmin && <div style={{ background:'var(--bg)', borderRadius:'var(--radius)', padding:'1rem', marginBottom:'1rem' }}>
-                <div style={{ fontSize:12, fontWeight:600, marginBottom:10 }}>Registrar nova medição</div>
+                <div style={{ fontSize:12, fontWeight:600, marginBottom:10 }}>{editandoMedId ? 'Editando medição' : 'Registrar nova medição'}</div>
                 <div className="form-grid">
                   <div className="field"><label>Nº da medição *</label><input value={fMed.numero} onChange={e => setFMed({...fMed,numero:e.target.value})} placeholder="01" /></div>
                   <div className="field"><label>Mês de referência</label><input type="month" value={fMed.mes_referencia} onChange={e => setFMed({...fMed,mes_referencia:e.target.value})} /></div>
@@ -466,7 +522,10 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
                     {previewSaldo < 0 && ' — ATENÇÃO: saldo ficará negativo'}
                   </div>
                 )}
-                <div className="btn-row"><button className="btn primary" onClick={salvarMedicao} disabled={salvando}>Salvar medição</button></div>
+                <div className="btn-row">
+                  {editandoMedId && <button className="btn" onClick={cancelarEdicaoMedicao}>Cancelar</button>}
+                  <button className="btn primary" onClick={salvarMedicao} disabled={salvando}>{editandoMedId ? 'Atualizar medição' : 'Salvar medição'}</button>
+                </div>
               </div>}
               <div style={{ overflowX:'auto' }}>
                 <table>
@@ -492,7 +551,7 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
                           </td>
                           <td><span className={`badge ${m.status}`}>{m.status}</span></td>
                           <td style={{ color:'var(--text3)', fontSize:11 }}>{m.descricao||'—'}</td>
-                          <td>{isAdmin && <button className="btn danger" style={{ padding:'2px 8px',fontSize:11 }} onClick={() => excluirMedicao(m.id)}>Excluir</button>}</td>
+                          <td>{isAdmin && <div style={{display:'flex',gap:4}}><button className="btn" style={{ padding:'2px 8px',fontSize:11 }} onClick={() => editarMedicao(m)}>Editar</button><button className="btn danger" style={{ padding:'2px 8px',fontSize:11 }} onClick={() => excluirMedicao(m.id)}>Excluir</button></div>}</td>
                         </tr>
                       ))}
                   </tbody>
@@ -521,7 +580,7 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
                 </div>
               )}
               {isAdmin && <div style={{background:'var(--bg)',borderRadius:'var(--radius)',padding:'1rem',marginBottom:'1rem'}}>
-                <div style={{fontSize:12,fontWeight:600,marginBottom:10}}>Registrar novo aditivo</div>
+                <div style={{fontSize:12,fontWeight:600,marginBottom:10}}>{editandoAdiId ? 'Editando aditivo' : 'Registrar novo aditivo'}</div>
                 <div className="form-grid">
                   <div className="field"><label>Nº do aditivo *</label><input value={fAdi.numero} onChange={e=>setFAdi({...fAdi,numero:e.target.value})} placeholder="1º Aditivo" /></div>
                   <div className="field"><label>Data de assinatura *</label><input type="date" value={fAdi.data_assinatura} onChange={e=>setFAdi({...fAdi,data_assinatura:e.target.value})} /></div>
@@ -571,7 +630,10 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
                 <div className="form-grid full" style={{marginTop:10}}>
                   <div className="field"><label>Descrição</label><input value={fAdi.descricao} onChange={e=>setFAdi({...fAdi,descricao:e.target.value})} placeholder="Ex: Renovação anual com reajuste SINAPI 4,85%" /></div>
                 </div>
-                <div className="btn-row"><button className="btn primary" onClick={salvarAditivo} disabled={salvando}>Salvar aditivo</button></div>
+                <div className="btn-row">
+                  {editandoAdiId && <button className="btn" onClick={cancelarEdicaoAditivo}>Cancelar</button>}
+                  <button className="btn primary" onClick={salvarAditivo} disabled={salvando}>{editandoAdiId ? 'Atualizar aditivo' : 'Salvar aditivo'}</button>
+                </div>
               </div>}
               {aditivos.length===0
                 ? <div style={{textAlign:'center',padding:'1.5rem',color:'var(--text3)'}}>Nenhum aditivo registrado.</div>
@@ -590,7 +652,7 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
                             <td>{a.nova_vigencia?new Date(a.nova_vigencia+'T00:00:00').toLocaleDateString('pt-BR'):'—'}</td>
                             <td>{a.indice_reajuste&&Number(a.percentual_reajuste)>0?`${a.indice_reajuste} ${Number(a.percentual_reajuste).toFixed(2)}%`:'—'}</td>
                             <td style={{color:'var(--text3)',fontSize:11}}>{a.descricao||'—'}</td>
-                            <td>{isAdmin && <button className="btn danger" style={{padding:'2px 8px',fontSize:11}} onClick={()=>excluirAditivo(a.id)}>Excluir</button>}</td>
+                            <td>{isAdmin && <div style={{display:'flex',gap:4}}><button className="btn" style={{padding:'2px 8px',fontSize:11}} onClick={()=>editarAditivo(a)}>Editar</button><button className="btn danger" style={{padding:'2px 8px',fontSize:11}} onClick={()=>excluirAditivo(a.id)}>Excluir</button></div>}</td>
                           </tr>
                         ))}
                       </tbody>
