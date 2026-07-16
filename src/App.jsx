@@ -34,6 +34,67 @@ const useAuth = () => useContext(AuthCtx)
 const fmt = v => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', minimumFractionDigits: 2 })
 const diasAte = d => { if (!d) return 9999; return Math.ceil((new Date(d + 'T00:00:00') - new Date()) / 864e5) }
 
+// ─── CÁLCULO DE PERÍODOS DE VIGÊNCIA (renovação anual do contrato) ──
+// Cada aditivo de prazo inicia um novo "período" contratual, no qual o valor
+// do contrato retorna ao valor anual original, somado aos aditivos de valor
+// registrados dentro daquele período específico.
+function calcularPeriodosContrato(contrato, aditivosContrato) {
+  const aditivosPrazo = (aditivosContrato || [])
+    .filter(a => (a.tipo === 'prazo' || a.tipo === 'prazo_valor') && a.nova_vigencia)
+    .slice()
+    .sort((a, b) => new Date(a.data_assinatura) - new Date(b.data_assinatura))
+
+  const periodos = [{ inicio: null, fim: contrato?.data_vencimento || null, valorBase: Number(contrato?.valor_anual || 0) }]
+  let fimAtual = contrato?.data_vencimento || null
+  aditivosPrazo.forEach(ad => {
+    const inicioNovo = fimAtual
+    fimAtual = ad.nova_vigencia
+    periodos.push({ inicio: inicioNovo, fim: fimAtual, valorBase: Number(contrato?.valor_anual || 0), aditivoId: ad.id })
+  })
+  return periodos
+}
+
+// Encontra o índice do período ao qual uma data pertence (o último período cujo início é <= data)
+function indicePeriodo(periodos, dataStr) {
+  if (!dataStr) return periodos.length - 1
+  const d = new Date(dataStr + 'T00:00:00')
+  let idx = 0
+  for (let i = 0; i < periodos.length; i++) {
+    const ini = periodos[i].inicio ? new Date(periodos[i].inicio + 'T00:00:00') : null
+    if (!ini || d >= ini) idx = i
+  }
+  return idx
+}
+
+// Calcula, para um contrato, o valor e o saldo de cada período de vigência,
+// considerando aditivos de valor e medições realizadas em cada período.
+function calcularSituacaoPeriodos(contrato, aditivosContrato, medicoesContrato) {
+  const periodos = calcularPeriodosContrato(contrato, aditivosContrato)
+  const aditivosValor = (aditivosContrato || []).filter(a => a.tipo === 'valor' || a.tipo === 'prazo_valor')
+
+  const valores = periodos.map((p, i) => {
+    const extra = aditivosValor
+      .filter(av => indicePeriodo(periodos, av.data_assinatura) === i)
+      .reduce((s, av) => s + Number(av.valor_acrescido || 0), 0)
+    return p.valorBase + extra
+  })
+
+  const medidos = periodos.map(() => 0)
+  ;(medicoesContrato || []).forEach(m => {
+    const dataRef = m.data_medicao || (m.mes_referencia ? m.mes_referencia + '-01' : null)
+    const idx = indicePeriodo(periodos, dataRef)
+    medidos[idx] += Number(m.valor || 0)
+  })
+
+  const idxAtual = periodos.length - 1
+  return {
+    periodos, valores, medidos, idxAtual,
+    valorPeriodoAtual: valores[idxAtual],
+    medidoPeriodoAtual: medidos[idxAtual],
+    saldoPeriodoAtual: valores[idxAtual] - medidos[idxAtual],
+  }
+}
+
 // ─── LOGIN ───────────────────────────────────────────────────
 function Login() {
   const { login } = useAuth()
@@ -78,6 +139,7 @@ function Sidebar({ pagina, setPagina, qtdAlertas, area, mudarArea }) {
     { id: 'contratos', label: 'Contratos' },
     { id: 'alertas',   label: 'Alertas', badge: qtdAlertas },
     { id: 'orcamento', label: 'Orçamento 2026' },
+    { id: 'previsao',  label: 'Previsão de Gastos' },
   ]
   return (
     <aside className="sidebar">
@@ -219,17 +281,23 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
   const [aditivos, setAditivos] = useState([])
   const [fAdi, setFAdi] = useState({ numero:'', sei:'', data_assinatura:'', tipo:'prazo', meses_acrescidos:12, nova_vigencia:'', valor_acrescido:'', indice_reajuste:'SINAPI', percentual_reajuste:'', valor_mensal_anterior:'', valor_mensal_novo:'', descricao:'' })
 
+  const [previsoes, setPrevisoes] = useState([])
+  const [fPrev, setFPrev] = useState({ descricao:'', valor_previsto:'', data_prevista:'', status:'planejado', observacoes:'' })
+  const [editandoPrevId, setEditandoPrevId] = useState(null)
+
   async function carregar() {
-    const [{ data: c }, { data: e }, { data: m }, { data: a }] = await Promise.all([
+    const [{ data: c }, { data: e }, { data: m }, { data: a }, { data: p }] = await Promise.all([
       supabase.from('contratos').select('*').eq('id', contratoId).single(),
       supabase.from('empenhos').select('*').eq('contrato_id', contratoId).order('data_empenho'),
       supabase.from('medicoes').select('*').eq('contrato_id', contratoId).order('data_medicao').order('criado_em'),
       supabase.from('aditivos').select('*').eq('contrato_id', contratoId).order('data_assinatura'),
+      supabase.from('previsoes_orcamento').select('*').eq('contrato_id', contratoId).order('data_prevista'),
     ])
     setContrato(c)
     setEmpenhos(e || [])
     setMedicoes(m || [])
     setAditivos(a || [])
+    setPrevisoes(p || [])
   }
 
   useEffect(() => { carregar() }, [contratoId])
@@ -238,10 +306,12 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
   const totalMed = medicoes.reduce((a, m) => a + Number(m.valor), 0)
   const saldo = totalEmp - totalMed
 
-  // Valor anual vigente: original + somatório de aditivos de valor
+  // Situação por período de vigência: cada aditivo de prazo renova o valor do contrato
+  const situacaoPeriodos = calcularSituacaoPeriodos(contrato, aditivos, medicoes)
   const valorAnualOriginal = Number(contrato?.valor_anual || 0)
   const valorAnualAditivos = aditivos.filter(a => a.tipo === 'valor' || a.tipo === 'prazo_valor').reduce((s, a) => s + Number(a.valor_acrescido || 0), 0)
-  const valorAnualVigente = valorAnualOriginal + valorAnualAditivos
+  const valorAnualVigente = situacaoPeriodos.valorPeriodoAtual
+  const medidoPeriodoAtual = situacaoPeriodos.medidoPeriodoAtual
 
   // Valor mensal vigente: aplica reajustes em ordem cronológica
   const mensalVigente = (() => {
@@ -264,8 +334,13 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
   const mensal = mensalVigente || Number(contrato?.valor_mensal_previsto || 0)
   const loa = Number(contrato?.loa_2026 || 0)
   const saldoLoa = loa - totalEmp
-  const saldoAnual = valorAnualVigente - totalMed
+  const saldoAnual = situacaoPeriodos.saldoPeriodoAtual
   const bannerCls = saldo < 0 ? 'negativo' : saldo < mensal ? 'baixo' : 'positivo'
+
+  // Previsões de serviços/orçamentos futuros ainda não empenhados
+  const totalPrevisto = previsoes.filter(p => p.status === 'planejado' || p.status === 'em_execucao').reduce((s, p) => s + Number(p.valor_previsto || 0), 0)
+  const saldoProjetadoEmpenho = saldo - totalPrevisto
+  const saldoProjetadoPeriodo = saldoAnual - totalPrevisto
 
   function editarAditivo(a) {
     setEditandoAdiId(a.id)
@@ -314,6 +389,43 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
     if (!confirm('Excluir este aditivo? Os cálculos serão revertidos.')) return
     await supabase.from('aditivos').delete().eq('id', id)
     if (editandoAdiId === id) cancelarEdicaoAditivo()
+    await carregar(); onAtualizado()
+  }
+
+  function editarPrevisao(p) {
+    setEditandoPrevId(p.id)
+    setFPrev({ descricao: p.descricao, valor_previsto: p.valor_previsto, data_prevista: p.data_prevista || '', status: p.status || 'planejado', observacoes: p.observacoes || '' })
+  }
+
+  function cancelarEdicaoPrevisao() {
+    setEditandoPrevId(null)
+    setFPrev({ descricao:'', valor_previsto:'', data_prevista:'', status:'planejado', observacoes:'' })
+  }
+
+  async function salvarPrevisao() {
+    if (!fPrev.descricao || !fPrev.valor_previsto) return alert('Informe a descrição e o valor previsto.')
+    setSalvando(true)
+    const payload = {
+      contrato_id: contratoId,
+      descricao: fPrev.descricao,
+      valor_previsto: Number(fPrev.valor_previsto),
+      data_prevista: fPrev.data_prevista || null,
+      status: fPrev.status,
+      observacoes: fPrev.observacoes || null,
+    }
+    const { error } = editandoPrevId
+      ? await supabase.from('previsoes_orcamento').update(payload).eq('id', editandoPrevId)
+      : await supabase.from('previsoes_orcamento').insert(payload)
+    if (error) { alert('Erro: ' + error.message); setSalvando(false); return }
+    setFPrev({ descricao:'', valor_previsto:'', data_prevista:'', status:'planejado', observacoes:'' })
+    setEditandoPrevId(null)
+    await carregar(); onAtualizado(); setSalvando(false)
+  }
+
+  async function excluirPrevisao(id) {
+    if (!confirm('Excluir esta previsão de orçamento?')) return
+    await supabase.from('previsoes_orcamento').delete().eq('id', id)
+    if (editandoPrevId === id) cancelarEdicaoPrevisao()
     await carregar(); onAtualizado()
   }
 
@@ -426,7 +538,7 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
           </div>
 
           <div className="tabs">
-            {[['geral','Dados gerais'],['empenhos','Empenhos'],['medicoes','Medições'],['evolucao','Evolução'],['aditivos','Aditivos']].map(([id,label]) => (
+            {[['geral','Dados gerais'],['empenhos','Empenhos'],['medicoes','Medições'],['evolucao','Evolução'],['aditivos','Aditivos'],['previsao','Previsão']].map(([id,label]) => (
               <button key={id} className={`tab-btn${aba===id?' active':''}`} onClick={() => setAba(id)}>{label}</button>
             ))}
           </div>
@@ -659,18 +771,135 @@ function ModalDetalhe({ contratoId, onClose, onAtualizado }) {
                     </table>
                   </div>
                   <div style={{marginTop:12,padding:'10px 14px',background:'var(--bg)',borderRadius:'var(--radius)',fontSize:12}}>
-                    <div style={{fontWeight:600,marginBottom:6}}>Resumo vigente</div>
+                    <div style={{fontWeight:600,marginBottom:6}}>Resumo vigente (período atual)</div>
                     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}}>
-                      <div><span style={{color:'var(--text3)'}}>Valor anual original: </span><strong>{fmt(valorAnualOriginal)}</strong></div>
-                      <div><span style={{color:'var(--text3)'}}>Aditivos de valor: </span><strong style={{color:'var(--blue-text)'}}>+{fmt(valorAnualAditivos)}</strong></div>
-                      <div><span style={{color:'var(--text3)'}}>Valor anual vigente: </span><strong style={{color:'var(--green-text)'}}>{fmt(valorAnualVigente)}</strong></div>
+                      <div><span style={{color:'var(--text3)'}}>Valor do período atual: </span><strong style={{color:'var(--green-text)'}}>{fmt(valorAnualVigente)}</strong></div>
+                      <div><span style={{color:'var(--text3)'}}>Medido no período atual: </span><strong>{fmt(medidoPeriodoAtual)}</strong></div>
+                      <div><span style={{color:'var(--text3)'}}>Saldo do período atual: </span><strong style={{color:saldoAnual<0?'var(--red)':'var(--green-text)'}}>{fmt(saldoAnual)}</strong></div>
                       <div><span style={{color:'var(--text3)'}}>Mensal vigente: </span><strong>{fmt(mensal)}</strong></div>
                       <div><span style={{color:'var(--text3)'}}>Vigência vigente: </span><strong>{vigenciaVigente?new Date(vigenciaVigente+'T00:00:00').toLocaleDateString('pt-BR'):'—'}</strong></div>
                       <div><span style={{color:'var(--text3)'}}>LOA 2026: </span><strong style={{color:valorAnualVigente>Number(contrato?.loa_2026||0)&&Number(contrato?.loa_2026||0)>0?'var(--red)':'inherit'}}>{fmt(contrato?.loa_2026)}</strong></div>
                     </div>
                   </div>
+                  {situacaoPeriodos.periodos.length > 1 && (
+                    <div style={{marginTop:12}}>
+                      <div style={{fontSize:12,fontWeight:600,marginBottom:6}}>Histórico de períodos de vigência</div>
+                      <table>
+                        <thead><tr><th>Período</th><th>De</th><th>Até</th><th className="text-right">Valor do período</th><th className="text-right">Medido</th><th className="text-right">Saldo</th></tr></thead>
+                        <tbody>
+                          {situacaoPeriodos.periodos.map((p, i) => {
+                            const val = situacaoPeriodos.valores[i]
+                            const med = situacaoPeriodos.medidos[i]
+                            const sal = val - med
+                            const atual = i === situacaoPeriodos.idxAtual
+                            return (
+                              <tr key={i} style={atual ? {background:'#e6f1fb'} : {}}>
+                                <td>{i+1}º {atual && <span className="badge info" style={{marginLeft:4}}>vigente</span>}</td>
+                                <td style={{fontSize:11}}>{p.inicio ? new Date(p.inicio+'T00:00:00').toLocaleDateString('pt-BR') : 'Início do contrato'}</td>
+                                <td style={{fontSize:11}}>{p.fim ? new Date(p.fim+'T00:00:00').toLocaleDateString('pt-BR') : '—'}</td>
+                                <td className="text-right">{fmt(val)}</td>
+                                <td className="text-right">{fmt(med)}</td>
+                                <td className="text-right" style={{fontWeight:600,color:sal<0?'var(--red)':'var(--green)'}}>{fmt(sal)}</td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </>
               }
+            </div>
+          )}
+
+          {/* ABA PREVISÃO DE SERVIÇOS / ORÇAMENTOS FUTUROS */}
+          {aba === 'previsao' && (
+            <div>
+              <div style={{fontSize:11,color:'var(--text3)',marginBottom:10}}>
+                Cadastre aqui serviços ou orçamentos planejados que ainda não foram empenhados, para verificar se o saldo atual do contrato consegue cobrir a demanda futura.
+              </div>
+
+              {totalPrevisto > 0 && (
+                <div className={`saldo-banner ${saldoProjetadoEmpenho<0?'negativo':saldoProjetadoEmpenho<mensal?'baixo':'positivo'}`} style={{marginBottom:10}}>
+                  <div style={{fontSize:20}}>{saldoProjetadoEmpenho<0?'⊖':saldoProjetadoEmpenho<mensal?'⚠':'✓'}</div>
+                  <div>
+                    <div style={{fontWeight:600,fontSize:14}}>
+                      {saldoProjetadoEmpenho<0
+                        ? `Empenho INSUFICIENTE — reforçar em ${fmt(Math.abs(saldoProjetadoEmpenho))} para cobrir os serviços previstos`
+                        : `Saldo de empenho cobre os serviços previstos — sobra projetada de ${fmt(saldoProjetadoEmpenho)}`}
+                    </div>
+                    <div style={{fontSize:11,marginTop:2,opacity:.8}}>
+                      Saldo atual de empenho: {fmt(saldo)} · Serviços previstos: {fmt(totalPrevisto)}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {totalPrevisto > 0 && saldoProjetadoPeriodo < 0 && (
+                <div className="alert warn" style={{marginBottom:10}}>
+                  Atenção: mesmo reforçando o empenho, o valor do período vigente do contrato ({fmt(valorAnualVigente)}) pode não ser suficiente — considere um aditivo de valor. Saldo projetado do período: {fmt(saldoProjetadoPeriodo)}
+                </div>
+              )}
+
+              {isAdmin && <div style={{background:'var(--bg)',borderRadius:'var(--radius)',padding:'1rem',marginBottom:'1rem'}}>
+                <div style={{fontSize:12,fontWeight:600,marginBottom:10}}>{editandoPrevId ? 'Editando previsão' : 'Registrar novo orçamento/serviço previsto'}</div>
+                <div className="form-grid full">
+                  <div className="field"><label>Descrição do serviço/orçamento *</label><input value={fPrev.descricao} onChange={e=>setFPrev({...fPrev,descricao:e.target.value})} placeholder="Ex: Substituição de compressores - climatização PGJ" /></div>
+                </div>
+                <div className="form-grid" style={{marginTop:10}}>
+                  <div className="field"><label>Valor previsto (R$) *</label><input type="number" step="0.01" value={fPrev.valor_previsto} onChange={e=>setFPrev({...fPrev,valor_previsto:e.target.value})} placeholder="0,00" /></div>
+                  <div className="field"><label>Data prevista</label><input type="date" value={fPrev.data_prevista} onChange={e=>setFPrev({...fPrev,data_prevista:e.target.value})} /></div>
+                </div>
+                <div className="form-grid" style={{marginTop:10}}>
+                  <div className="field"><label>Status</label>
+                    <select value={fPrev.status} onChange={e=>setFPrev({...fPrev,status:e.target.value})}>
+                      <option value="planejado">Planejado</option>
+                      <option value="em_execucao">Em execução</option>
+                      <option value="concluido">Concluído</option>
+                      <option value="cancelado">Cancelado</option>
+                    </select>
+                  </div>
+                  <div className="field"><label>Observações</label><input value={fPrev.observacoes} onChange={e=>setFPrev({...fPrev,observacoes:e.target.value})} /></div>
+                </div>
+                <div className="btn-row">
+                  {editandoPrevId && <button className="btn" onClick={cancelarEdicaoPrevisao}>Cancelar</button>}
+                  <button className="btn primary" onClick={salvarPrevisao} disabled={salvando}>{editandoPrevId ? 'Atualizar previsão' : 'Salvar previsão'}</button>
+                </div>
+              </div>}
+
+              {previsoes.length === 0
+                ? <div style={{textAlign:'center',padding:'1.5rem',color:'var(--text3)'}}>Nenhum orçamento futuro cadastrado.</div>
+                : (
+                  <table>
+                    <thead><tr><th>Descrição</th><th>Data prevista</th><th className="text-right">Valor previsto</th><th>Status</th><th>Observações</th><th></th></tr></thead>
+                    <tbody>
+                      {previsoes.map(p => (
+                        <tr key={p.id}>
+                          <td style={{maxWidth:220}}>{p.descricao}</td>
+                          <td style={{fontSize:11}}>{p.data_prevista?new Date(p.data_prevista+'T00:00:00').toLocaleDateString('pt-BR'):'—'}</td>
+                          <td className="text-right" style={{fontWeight:600}}>{fmt(p.valor_previsto)}</td>
+                          <td><span className={`badge ${p.status==='concluido'?'ativo':p.status==='cancelado'?'critico':p.status==='em_execucao'?'info':'alerta'}`}>{p.status==='planejado'?'Planejado':p.status==='em_execucao'?'Em execução':p.status==='concluido'?'Concluído':'Cancelado'}</span></td>
+                          <td style={{color:'var(--text3)',fontSize:11}}>{p.observacoes||'—'}</td>
+                          <td>{isAdmin && <div style={{display:'flex',gap:4}}><button className="btn" style={{padding:'2px 8px',fontSize:11}} onClick={()=>editarPrevisao(p)}>Editar</button><button className="btn danger" style={{padding:'2px 8px',fontSize:11}} onClick={()=>excluirPrevisao(p.id)}>Excluir</button></div>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )
+              }
+
+              {previsoes.length > 0 && (
+                <div style={{marginTop:12,padding:'10px 14px',background:'var(--bg)',borderRadius:'var(--radius)',fontSize:12}}>
+                  <div style={{fontWeight:600,marginBottom:6}}>Resumo da projeção</div>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}}>
+                    <div><span style={{color:'var(--text3)'}}>Saldo de empenho atual: </span><strong>{fmt(saldo)}</strong></div>
+                    <div><span style={{color:'var(--text3)'}}>Serviços previstos (não empenhados): </span><strong style={{color:'var(--blue-text)'}}>-{fmt(totalPrevisto)}</strong></div>
+                    <div><span style={{color:'var(--text3)'}}>Saldo projetado de empenho: </span><strong style={{color:saldoProjetadoEmpenho<0?'var(--red)':'var(--green-text)'}}>{fmt(saldoProjetadoEmpenho)}</strong></div>
+                    <div><span style={{color:'var(--text3)'}}>Saldo do período atual: </span><strong>{fmt(saldoAnual)}</strong></div>
+                    <div><span style={{color:'var(--text3)'}}>Saldo projetado do período: </span><strong style={{color:saldoProjetadoPeriodo<0?'var(--red)':'var(--green-text)'}}>{fmt(saldoProjetadoPeriodo)}</strong></div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -727,17 +956,17 @@ function Dashboard({ onVerContrato, area }) {
   async function carregar() {
     const { data: cs } = await supabase.from('contratos').select('*').eq('area', area).order('numero')
     const { data: es } = await supabase.from('empenhos').select('contrato_id, valor')
-    const { data: ms } = await supabase.from('medicoes').select('contrato_id, valor')
-    const { data: as } = await supabase.from('aditivos').select('contrato_id,tipo,valor_acrescido,percentual_reajuste,valor_mensal_novo,nova_vigencia,data_assinatura')
+    const { data: ms } = await supabase.from('medicoes').select('contrato_id, valor, data_medicao, mes_referencia')
+    const { data: as } = await supabase.from('aditivos').select('*')
     const lista = (cs || []).map(c => {
       const adis=(as||[]).filter(a=>a.contrato_id===c.id)
-      const valorAnualAds=adis.filter(a=>a.tipo==='valor'||a.tipo==='prazo_valor').reduce((s,a)=>s+Number(a.valor_acrescido||0),0)
-      const valorAnualVig=Number(c.valor_anual||0)+valorAnualAds
+      const medsContrato=(ms||[]).filter(m=>m.contrato_id===c.id)
+      const situacao = calcularSituacaoPeriodos(c, adis, medsContrato)
       let mensalVig=Number(c.valor_mensal_previsto||0)
       adis.filter(a=>a.tipo==='reajuste'&&Number(a.valor_mensal_novo)>0).sort((a,b)=>new Date(a.data_assinatura)-new Date(b.data_assinatura)).forEach(a=>{mensalVig=Number(a.valor_mensal_novo)})
       let vigVig=c.data_vencimento
       adis.filter(a=>(a.tipo==='prazo'||a.tipo==='prazo_valor')&&a.nova_vigencia).sort((a,b)=>new Date(a.data_assinatura)-new Date(b.data_assinatura)).forEach(a=>{vigVig=a.nova_vigencia})
-      return { ...c, totalEmp:(es||[]).filter(e=>e.contrato_id===c.id).reduce((a,e)=>a+Number(e.valor),0), totalMed:(ms||[]).filter(m=>m.contrato_id===c.id).reduce((a,m)=>a+Number(m.valor),0), valorAnualVigente:valorAnualVig, mensalVigente:mensalVig, vigenciaVigente:vigVig }
+      return { ...c, totalEmp:(es||[]).filter(e=>e.contrato_id===c.id).reduce((a,e)=>a+Number(e.valor),0), totalMed: medsContrato.reduce((a,m)=>a+Number(m.valor),0), valorAnualVigente:situacao.valorPeriodoAtual, medidoPeriodoAtual:situacao.medidoPeriodoAtual, mensalVigente:mensalVig, vigenciaVigente:vigVig }
     })
     setContratos(lista); setLoading(false)
   }
@@ -754,14 +983,14 @@ function Dashboard({ onVerContrato, area }) {
     const dias = diasAte(c.vigenciaVigente || c.data_vencimento)
     const anual = c.valorAnualVigente || Number(c.valor_anual || 0)
     const loa = Number(c.loa_2026 || 0)
-    const percAnual = anual > 0 ? c.totalMed / anual * 100 : 0
+    const percAnual = anual > 0 ? c.medidoPeriodoAtual / anual * 100 : 0
     const percLoa   = loa   > 0 ? c.totalEmp / loa   * 100 : 0
     // Alertas empenho x medição
     if (c.totalEmp>0&&sal<0) alertas.push({ tipo:'danger', msg:`Contrato ${c.numero} (${c.empresa}): saldo de empenho NEGATIVO ${fmt(sal)}` })
     else if (c.totalEmp>0&&sal<Number(c.valor_mensal_previsto||0)) alertas.push({ tipo:'danger', msg:`Contrato ${c.numero} (${c.empresa}): saldo de empenho insuficiente ${fmt(sal)}` })
-    // Alertas valor anual
-    if (anual>0&&percAnual>=100) alertas.push({ tipo:'danger', msg:`Contrato ${c.numero} (${c.empresa}): total medido (${fmt(c.totalMed)}) ULTRAPASSOU o valor anual (${fmt(anual)})` })
-    else if (anual>0&&percAnual>=80) alertas.push({ tipo:'warn', msg:`Contrato ${c.numero} (${c.empresa}): ${percAnual.toFixed(0)}% do valor anual já medido — saldo restante ${fmt(anual-c.totalMed)}` })
+    // Alertas valor anual (período de vigência atual)
+    if (anual>0&&percAnual>=100) alertas.push({ tipo:'danger', msg:`Contrato ${c.numero} (${c.empresa}): total medido no período (${fmt(c.medidoPeriodoAtual)}) ULTRAPASSOU o valor do período (${fmt(anual)})` })
+    else if (anual>0&&percAnual>=80) alertas.push({ tipo:'warn', msg:`Contrato ${c.numero} (${c.empresa}): ${percAnual.toFixed(0)}% do valor do período já medido — saldo restante ${fmt(anual-c.medidoPeriodoAtual)}` })
     // Alertas LOA
     if (loa>0&&percLoa>=100) alertas.push({ tipo:'danger', msg:`Contrato ${c.numero} (${c.empresa}): total empenhado (${fmt(c.totalEmp)}) ULTRAPASSOU a LOA 2026 (${fmt(loa)})` })
     else if (loa>0&&percLoa>=80) alertas.push({ tipo:'warn', msg:`Contrato ${c.numero} (${c.empresa}): ${percLoa.toFixed(0)}% da LOA já empenhado — saldo LOA restante ${fmt(loa-c.totalEmp)}` })
@@ -831,12 +1060,23 @@ function Contratos({ onVerContrato, area }) {
   async function carregar() {
     const { data: cs } = await supabase.from('contratos').select('*').eq('area', area).order('numero')
     const { data: es } = await supabase.from('empenhos').select('contrato_id, valor')
-    const { data: ms } = await supabase.from('medicoes').select('contrato_id, valor')
-    setContratos((cs||[]).map(c=>({
-      ...c,
-      totalEmp:(es||[]).filter(e=>e.contrato_id===c.id).reduce((a,e)=>a+Number(e.valor),0),
-      totalMed:(ms||[]).filter(m=>m.contrato_id===c.id).reduce((a,m)=>a+Number(m.valor),0),
-    })))
+    const { data: ms } = await supabase.from('medicoes').select('contrato_id, valor, data_medicao, mes_referencia')
+    const { data: as } = await supabase.from('aditivos').select('*')
+    setContratos((cs||[]).map(c=>{
+      const adis=(as||[]).filter(a=>a.contrato_id===c.id)
+      const medsContrato=(ms||[]).filter(m=>m.contrato_id===c.id)
+      const situacao = calcularSituacaoPeriodos(c, adis, medsContrato)
+      let vigVig=c.data_vencimento
+      adis.filter(a=>(a.tipo==='prazo'||a.tipo==='prazo_valor')&&a.nova_vigencia).sort((a,b)=>new Date(a.data_assinatura)-new Date(b.data_assinatura)).forEach(a=>{vigVig=a.nova_vigencia})
+      return {
+        ...c,
+        totalEmp:(es||[]).filter(e=>e.contrato_id===c.id).reduce((a,e)=>a+Number(e.valor),0),
+        totalMed: medsContrato.reduce((a,m)=>a+Number(m.valor),0),
+        valorAnualVigente: situacao.valorPeriodoAtual,
+        medidoPeriodoAtual: situacao.medidoPeriodoAtual,
+        vigenciaVigente: vigVig,
+      }
+    }))
     setLoading(false)
   }
   useEffect(() => { carregar() }, [])
@@ -857,15 +1097,15 @@ function Contratos({ onVerContrato, area }) {
           <div className="table-wrap">
             <table>
               <thead>
-                <tr><th>Nº</th><th>Empresa</th><th>Local</th><th>Vigência</th><th className="text-right">Valor anual</th><th className="text-right">Empenhado</th><th className="text-right">Medido</th><th className="text-right">Saldo</th><th>Status</th></tr>
+                <tr><th>Nº</th><th>Empresa</th><th>Local</th><th>Vigência</th><th className="text-right">Valor do período</th><th className="text-right">Empenhado</th><th className="text-right">Medido</th><th className="text-right">Saldo</th><th>Status</th></tr>
               </thead>
               <tbody>
                 {lista.length===0
                   ? <tr><td colSpan={9} style={{textAlign:'center',padding:'2rem',color:'var(--text3)'}}>Nenhum contrato encontrado</td></tr>
                   : lista.map(c => {
                     const sal = c.totalEmp-c.totalMed
-                    const dias = diasAte(c.data_vencimento)
-                    const st = sal<0&&c.totalEmp>0?'negativo':dias<=30&&c.data_vencimento?'critico':dias<=120&&c.data_vencimento?'alerta':'ativo'
+                    const dias = diasAte(c.vigenciaVigente||c.data_vencimento)
+                    const st = sal<0&&c.totalEmp>0?'negativo':dias<=30&&(c.vigenciaVigente||c.data_vencimento)?'critico':dias<=120&&(c.vigenciaVigente||c.data_vencimento)?'alerta':'ativo'
                     return (
                       <tr key={c.id} className="clickable" onClick={() => onVerContrato(c.id)}>
                         <td style={{fontWeight:600}}>{c.numero}</td>
@@ -876,7 +1116,7 @@ function Contratos({ onVerContrato, area }) {
                           {c.vigenciaVigente&&c.vigenciaVigente!==c.data_vencimento&&<span style={{fontSize:9,background:'#e6f1fb',color:'#0c447c',borderRadius:4,padding:'1px 4px',marginLeft:3}}>+Adit.</span>}
                           {(c.vigenciaVigente||c.data_vencimento)&&diasAte(c.vigenciaVigente||c.data_vencimento)>=0&&<div style={{fontSize:10,color:diasAte(c.vigenciaVigente||c.data_vencimento)<=30?'var(--red)':diasAte(c.vigenciaVigente||c.data_vencimento)<=120?'var(--amber)':'var(--text3)'}}>{diasAte(c.vigenciaVigente||c.data_vencimento)}d</div>}
                         </td>
-                        <td className="text-right">{c.valor_anual?fmt(c.valor_anual):'—'}</td>
+                        <td className="text-right">{c.valorAnualVigente?fmt(c.valorAnualVigente):'—'}</td>
                         <td className="text-right">{c.totalEmp>0?fmt(c.totalEmp):<span className="text-muted">—</span>}</td>
                         <td className="text-right">{fmt(c.totalMed)}</td>
                         <td className="text-right" style={{fontWeight:600,color:sal<0?'var(--red)':sal<Number(c.valor_mensal_previsto||0)?'var(--amber)':'var(--green)'}}>{fmt(sal)}</td>
@@ -902,24 +1142,25 @@ function Alertas({ area }) {
     async function carregar() {
       const { data: cs } = await supabase.from('contratos').select('*').eq('area', area)
       const { data: es } = await supabase.from('empenhos').select('contrato_id, valor')
-      const { data: ms } = await supabase.from('medicoes').select('contrato_id, valor')
-      const { data: as2 } = await supabase.from('aditivos').select('contrato_id,tipo,valor_acrescido,nova_vigencia,data_assinatura')
+      const { data: ms } = await supabase.from('medicoes').select('contrato_id, valor, data_medicao, mes_referencia')
+      const { data: as2 } = await supabase.from('aditivos').select('*')
       const al = []
       ;(cs||[]).forEach(c => {
         const emp=(es||[]).filter(e=>e.contrato_id===c.id).reduce((a,e)=>a+Number(e.valor),0)
         const med=(ms||[]).filter(m=>m.contrato_id===c.id).reduce((a,m)=>a+Number(m.valor),0)
         const adis2=(as2||[]).filter(a=>a.contrato_id===c.id)
-        const valorAnualAds2=adis2.filter(a=>a.tipo==='valor'||a.tipo==='prazo_valor').reduce((s,a)=>s+Number(a.valor_acrescido||0),0)
+        const medsContrato2=(ms||[]).filter(m=>m.contrato_id===c.id)
+        const situacao2 = calcularSituacaoPeriodos(c, adis2, medsContrato2)
         let vigVig2=c.data_vencimento; adis2.filter(a=>(a.tipo==='prazo'||a.tipo==='prazo_valor')&&a.nova_vigencia).sort((a,b)=>new Date(a.data_assinatura)-new Date(b.data_assinatura)).forEach(a=>{vigVig2=a.nova_vigencia})
         const sal=emp-med; const dias=diasAte(vigVig2||c.data_vencimento)
-        const anual=(Number(c.valor_anual||0)+valorAnualAds2)||0; const loa=Number(c.loa_2026||0)
-        const percAnual=anual>0?med/anual*100:0
+        const anual=situacao2.valorPeriodoAtual; const loa=Number(c.loa_2026||0)
+        const percAnual=anual>0?situacao2.medidoPeriodoAtual/anual*100:0
         const percLoa=loa>0?emp/loa*100:0
         if (emp>0&&sal<0) al.push({tipo:'danger',contrato:c.numero,empresa:c.empresa,msg:`Saldo de empenho NEGATIVO: ${fmt(sal)} — reforce urgentemente`})
         else if (emp>0&&sal<Number(c.valor_mensal_previsto||0)) al.push({tipo:'danger',contrato:c.numero,empresa:c.empresa,msg:`Saldo de empenho insuficiente: ${fmt(sal)} — menor que uma medição mensal`})
         else if (emp>0&&sal<Number(c.valor_mensal_previsto||0)*2) al.push({tipo:'warn',contrato:c.numero,empresa:c.empresa,msg:`Saldo de empenho baixo: ${fmt(sal)} — reforce em breve`})
-        if (anual>0&&percAnual>=100) al.push({tipo:'danger',contrato:c.numero,empresa:c.empresa,msg:`Total medido (${fmt(med)}) ULTRAPASSOU o valor anual do contrato (${fmt(anual)})`})
-        else if (anual>0&&percAnual>=80) al.push({tipo:'warn',contrato:c.numero,empresa:c.empresa,msg:`${percAnual.toFixed(0)}% do valor anual já executado — saldo restante: ${fmt(anual-med)}`})
+        if (anual>0&&percAnual>=100) al.push({tipo:'danger',contrato:c.numero,empresa:c.empresa,msg:`Total medido no período (${fmt(situacao2.medidoPeriodoAtual)}) ULTRAPASSOU o valor do período (${fmt(anual)})`})
+        else if (anual>0&&percAnual>=80) al.push({tipo:'warn',contrato:c.numero,empresa:c.empresa,msg:`${percAnual.toFixed(0)}% do valor do período já executado — saldo restante: ${fmt(anual-situacao2.medidoPeriodoAtual)}`})
         if (loa>0&&percLoa>=100) al.push({tipo:'danger',contrato:c.numero,empresa:c.empresa,msg:`Total empenhado (${fmt(emp)}) ULTRAPASSOU a LOA 2026 (${fmt(loa)})`})
         else if (loa>0&&percLoa>=80) al.push({tipo:'warn',contrato:c.numero,empresa:c.empresa,msg:`${percLoa.toFixed(0)}% da LOA 2026 já empenhado — saldo LOA restante: ${fmt(loa-emp)}`})
         if (c.data_vencimento&&dias>=0&&dias<=30) al.push({tipo:'danger',contrato:c.numero,empresa:c.empresa,msg:`Vence em ${dias} dia${dias===1?'':'s'} — providencie renovação`})
@@ -955,19 +1196,26 @@ function Orcamento({ area }) {
     async function carregar() {
       const { data: cs } = await supabase.from('contratos').select('*').eq('area', area).order('numero')
       const { data: es } = await supabase.from('empenhos').select('contrato_id, valor')
-      const { data: ms } = await supabase.from('medicoes').select('contrato_id, valor')
-      setContratos((cs||[]).map(c=>({
-        ...c,
-        totalEmp:(es||[]).filter(e=>e.contrato_id===c.id).reduce((a,e)=>a+Number(e.valor),0),
-        totalMed:(ms||[]).filter(m=>m.contrato_id===c.id).reduce((a,m)=>a+Number(m.valor),0),
-      })))
+      const { data: ms } = await supabase.from('medicoes').select('contrato_id, valor, data_medicao, mes_referencia')
+      const { data: as } = await supabase.from('aditivos').select('*')
+      setContratos((cs||[]).map(c=>{
+        const adis=(as||[]).filter(a=>a.contrato_id===c.id)
+        const medsContrato=(ms||[]).filter(m=>m.contrato_id===c.id)
+        const situacao = calcularSituacaoPeriodos(c, adis, medsContrato)
+        return {
+          ...c,
+          totalEmp:(es||[]).filter(e=>e.contrato_id===c.id).reduce((a,e)=>a+Number(e.valor),0),
+          totalMed: medsContrato.reduce((a,m)=>a+Number(m.valor),0),
+          valorAnualVigente: situacao.valorPeriodoAtual,
+        }
+      }))
       setLoading(false)
     }
     carregar()
   }, [])
 
   const tLoa=contratos.reduce((a,c)=>a+Number(c.loa_2026||0),0)
-  const tAnual=contratos.reduce((a,c)=>a+Number(c.valor_anual||0),0)
+  const tAnual=contratos.reduce((a,c)=>a+Number(c.valorAnualVigente||0),0)
   const tEmp=contratos.reduce((a,c)=>a+c.totalEmp,0)
   const tMed=contratos.reduce((a,c)=>a+c.totalMed,0)
 
@@ -978,16 +1226,16 @@ function Orcamento({ area }) {
       {!loading&&<>
         <div className="metric-grid">
           <div className="metric-card"><div className="lbl">LOA 2026 total</div><div className="val" style={{fontSize:14}}>{fmt(tLoa)}</div></div>
-          <div className="metric-card"><div className="lbl">Valor anual contratos</div><div className="val" style={{fontSize:14}}>{fmt(tAnual)}</div></div>
+          <div className="metric-card"><div className="lbl">Valor do período (contratos)</div><div className="val" style={{fontSize:14}}>{fmt(tAnual)}</div></div>
           <div className="metric-card"><div className="lbl">Total empenhado</div><div className="val" style={{fontSize:14}}>{fmt(tEmp)}</div></div>
           <div className="metric-card"><div className="lbl">Total pago/medido</div><div className="val" style={{fontSize:14}}>{fmt(tMed)}</div></div>
           <div className="metric-card"><div className="lbl">Saldo empenhos</div><div className={`val ${tEmp-tMed<0?'danger':'ok'}`} style={{fontSize:14}}>{fmt(tEmp-tMed)}</div></div>
-          <div className="metric-card"><div className="lbl">Dif. LOA × Anual</div><div className={`val ${tLoa-tAnual<0?'danger':'ok'}`} style={{fontSize:14}}>{fmt(tLoa-tAnual)}</div></div>
+          <div className="metric-card"><div className="lbl">Dif. LOA × Período</div><div className={`val ${tLoa-tAnual<0?'danger':'ok'}`} style={{fontSize:14}}>{fmt(tLoa-tAnual)}</div></div>
         </div>
         <div className="card" style={{padding:0}}>
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Nº</th><th>Empresa</th><th className="text-right">LOA 2026</th><th className="text-right">Valor anual</th><th className="text-right">Empenhado</th><th className="text-right">Medido/pago</th><th className="text-right">Saldo empenho</th></tr></thead>
+              <thead><tr><th>Nº</th><th>Empresa</th><th className="text-right">LOA 2026</th><th className="text-right">Valor do período</th><th className="text-right">Empenhado</th><th className="text-right">Medido/pago</th><th className="text-right">Saldo empenho</th></tr></thead>
               <tbody>
                 {contratos.map(c=>{
                   const sal=c.totalEmp-c.totalMed
@@ -995,7 +1243,7 @@ function Orcamento({ area }) {
                     <tr key={c.id}>
                       <td style={{fontWeight:600}}>{c.numero}</td><td>{c.empresa}</td>
                       <td className="text-right">{fmt(c.loa_2026)}</td>
-                      <td className="text-right">{c.valor_anual?fmt(c.valor_anual):'—'}</td>
+                      <td className="text-right">{c.valorAnualVigente?fmt(c.valorAnualVigente):'—'}</td>
                       <td className="text-right">{c.totalEmp>0?fmt(c.totalEmp):'—'}</td>
                       <td className="text-right">{fmt(c.totalMed)}</td>
                       <td className="text-right" style={{fontWeight:600,color:sal<0?'var(--red)':sal<Number(c.valor_mensal_previsto||0)?'var(--amber)':'var(--green)'}}>{fmt(sal)}</td>
@@ -1021,6 +1269,140 @@ function Orcamento({ area }) {
   )
 }
 
+// ─── PREVISÃO DE GASTOS ──────────────────────────────────────
+function addMesesData(n) {
+  const d = new Date()
+  d.setMonth(d.getMonth() + n)
+  return d
+}
+
+function Previsao({ onVerContrato, area }) {
+  const [contratos, setContratos] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  async function carregar() {
+    const { data: cs } = await supabase.from('contratos').select('*').eq('area', area).order('numero')
+    const { data: es } = await supabase.from('empenhos').select('contrato_id, valor')
+    const { data: ms } = await supabase.from('medicoes').select('contrato_id, valor, data_medicao, mes_referencia')
+    const { data: as } = await supabase.from('aditivos').select('*')
+    const { data: ps } = await supabase.from('previsoes_orcamento').select('contrato_id, valor_previsto, status')
+    const lista = (cs||[]).map(c => {
+      const adis=(as||[]).filter(a=>a.contrato_id===c.id)
+      const medsContrato=(ms||[]).filter(m=>m.contrato_id===c.id)
+      const empC=(es||[]).filter(e=>e.contrato_id===c.id).reduce((a,e)=>a+Number(e.valor),0)
+      const medC=medsContrato.reduce((a,m)=>a+Number(m.valor),0)
+      const situacao = calcularSituacaoPeriodos(c, adis, medsContrato)
+      const totalPrevistoC = (ps||[]).filter(p=>p.contrato_id===c.id && (p.status==='planejado'||p.status==='em_execucao')).reduce((s,p)=>s+Number(p.valor_previsto||0),0)
+
+      let mensalVig=Number(c.valor_mensal_previsto||0)
+      adis.filter(a=>a.tipo==='reajuste'&&Number(a.valor_mensal_novo)>0).sort((a,b)=>new Date(a.data_assinatura)-new Date(b.data_assinatura)).forEach(a=>{mensalVig=Number(a.valor_mensal_novo)})
+      let vigVig=c.data_vencimento
+      adis.filter(a=>(a.tipo==='prazo'||a.tipo==='prazo_valor')&&a.nova_vigencia).sort((a,b)=>new Date(a.data_assinatura)-new Date(b.data_assinatura)).forEach(a=>{vigVig=a.nova_vigencia})
+
+      const saldoEmp = empC - medC
+      const saldoPer = situacao.saldoPeriodoAtual
+      const saldoProjEmp = saldoEmp - totalPrevistoC
+      const saldoProjPer = saldoPer - totalPrevistoC
+
+      const mesesEmp = mensalVig > 0 ? Math.floor(saldoEmp / mensalVig) : null
+      const mesesPer = mensalVig > 0 ? Math.floor(saldoPer / mensalVig) : null
+
+      return {
+        ...c, totalEmp: empC, totalMed: medC, saldoEmp, saldoPer,
+        mensalVigente: mensalVig, vigenciaVigente: vigVig,
+        mesesEmp, mesesPer, totalPrevisto: totalPrevistoC, saldoProjEmp, saldoProjPer,
+        valorPeriodoAtual: situacao.valorPeriodoAtual, medidoPeriodoAtual: situacao.medidoPeriodoAtual,
+      }
+    })
+    // Ordena por urgência: contratos com saldo projetado negativo primeiro, depois por meses restantes
+    lista.sort((a,b) => {
+      if (a.totalPrevisto>0 && a.saldoProjEmp<0 && !(b.totalPrevisto>0 && b.saldoProjEmp<0)) return -1
+      if (b.totalPrevisto>0 && b.saldoProjEmp<0 && !(a.totalPrevisto>0 && a.saldoProjEmp<0)) return 1
+      const ma = a.mesesEmp===null ? 9999 : a.mesesEmp
+      const mb = b.mesesEmp===null ? 9999 : b.mesesEmp
+      return ma - mb
+    })
+    setContratos(lista)
+    setLoading(false)
+  }
+  useEffect(() => { carregar() }, [])
+
+  function situacaoRecomendacao(c) {
+    if (c.totalPrevisto > 0 && c.saldoProjEmp < 0) return { nivel:'critico', texto:`Reforçar empenho em ${fmt(Math.abs(c.saldoProjEmp))} p/ cobrir serviços previstos` }
+    if (c.mensalVigente <= 0) return { nivel:'info', texto:'Sem valor mensal definido' }
+    if (c.saldoEmp <= 0) return { nivel:'critico', texto:'Empenho já esgotado — solicitar reforço imediatamente' }
+    if (c.mesesEmp <= 1) return { nivel:'critico', texto:`Reforçar empenho em até 30 dias` }
+    if (c.mesesEmp <= 3) return { nivel:'atencao', texto:'Planejar solicitação de reforço de empenho' }
+    return { nivel:'ok', texto:'Empenho suficiente por enquanto' }
+  }
+
+  const criticos = contratos.filter(c => (c.mensalVigente>0 && c.mesesEmp<=1) || (c.totalPrevisto>0 && c.saldoProjEmp<0)).length
+  const atencao  = contratos.filter(c => !((c.mensalVigente>0 && c.mesesEmp<=1) || (c.totalPrevisto>0 && c.saldoProjEmp<0)) && c.mensalVigente>0 && c.mesesEmp>1 && c.mesesEmp<=3).length
+  const comServicoPrevisto = contratos.filter(c => c.totalPrevisto > 0).length
+
+  return (
+    <div>
+      <div className="page-header">
+        <div>
+          <h1>Previsão de Gastos</h1>
+          <p>Projeção de saldo com base na execução mensal e serviços previstos — {area==='fiscalizacao'?'Fiscalização de Obras':'Manutenção Predial'}</p>
+        </div>
+      </div>
+
+      {loading ? <div style={{color:'var(--text3)',padding:'2rem'}}>Carregando...</div> : (
+        <>
+          <div className="metric-grid">
+            <div className="metric-card"><div className="lbl">Contratos monitorados</div><div className="val ok">{contratos.length}</div></div>
+            <div className="metric-card"><div className="lbl">Reforço necessário</div><div className={`val ${criticos>0?'danger':'ok'}`}>{criticos}</div></div>
+            <div className="metric-card"><div className="lbl">Planejar reforço (≤90 dias)</div><div className={`val ${atencao>0?'warn':'ok'}`}>{atencao}</div></div>
+            <div className="metric-card"><div className="lbl">Com serviços previstos</div><div className="val">{comServicoPrevisto}</div></div>
+          </div>
+
+          <div className="card" style={{padding:0}}>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Nº</th><th>Empresa</th>
+                    <th className="text-right">Saldo empenho</th>
+                    <th className="text-right">Mensal vigente</th>
+                    <th>Meses restantes</th>
+                    <th className="text-right">Serviços previstos</th>
+                    <th className="text-right">Saldo projetado</th>
+                    <th>Recomendação</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {contratos.length===0
+                    ? <tr><td colSpan={8} style={{textAlign:'center',padding:'2rem',color:'var(--text3)'}}>Nenhum contrato encontrado</td></tr>
+                    : contratos.map(c => {
+                      const rec = situacaoRecomendacao(c)
+                      return (
+                        <tr key={c.id} className="clickable" onClick={() => onVerContrato(c.id)}>
+                          <td style={{fontWeight:600}}>{c.numero}</td>
+                          <td>{c.empresa}</td>
+                          <td className="text-right" style={{fontWeight:600,color:c.saldoEmp<0?'var(--red)':c.saldoEmp<c.mensalVigente?'var(--amber)':'var(--green)'}}>{fmt(c.saldoEmp)}</td>
+                          <td className="text-right">{c.mensalVigente>0?fmt(c.mensalVigente):'—'}</td>
+                          <td>{c.mensalVigente>0 ? (c.mesesEmp<=0 ? <span style={{color:'var(--red)',fontWeight:600}}>Esgotado</span> : `${c.mesesEmp} mês(es)`) : '—'}</td>
+                          <td className="text-right">{c.totalPrevisto>0?fmt(c.totalPrevisto):<span className="text-muted">—</span>}</td>
+                          <td className="text-right" style={{fontWeight:600,color:(c.totalPrevisto>0?c.saldoProjEmp:c.saldoEmp)<0?'var(--red)':'var(--green)'}}>{c.totalPrevisto>0?fmt(c.saldoProjEmp):'—'}</td>
+                          <td><span className={`badge ${rec.nivel==='critico'?'critico':rec.nivel==='atencao'?'alerta':rec.nivel==='ok'?'ativo':'info'}`}>{rec.texto}</span></td>
+                        </tr>
+                      )
+                    })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div style={{fontSize:11,color:'var(--text3)',marginTop:10}}>
+            * A previsão considera o valor mensal vigente (após reajustes) aplicado de forma constante. Clique em um contrato para ver detalhes e lançar um novo empenho.
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 // ─── APP SHELL ───────────────────────────────────────────────
 
 // ─── RELATÓRIO ───────────────────────────────────────────────
@@ -1029,6 +1411,7 @@ async function gerarRelatorio(area) {
   const { data: es } = await supabase.from('empenhos').select('*').order('data_empenho')
   const { data: ms } = await supabase.from('medicoes').select('*').order('data_medicao').order('criado_em')
   const { data: adsr } = await supabase.from('aditivos').select('*').order('data_assinatura')
+  const { data: psr } = await supabase.from('previsoes_orcamento').select('*').order('data_prevista')
 
   const fmtR = v => Number(v||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL',minimumFractionDigits:2})
   const fmtD = d => d ? new Date(d+'T00:00:00').toLocaleDateString('pt-BR') : '—'
@@ -1036,33 +1419,39 @@ async function gerarRelatorio(area) {
 
   const contratos = (cs||[]).map(c => {
     const adisC=(adsr||[]).filter(a=>a.contrato_id===c.id)
-    const valorAnualAdsR=adisC.filter(a=>a.tipo==='valor'||a.tipo==='prazo_valor').reduce((s,a)=>s+Number(a.valor_acrescido||0),0)
+    const medicoesC=(ms||[]).filter(m=>m.contrato_id===c.id)
+    const previsoesC=(psr||[]).filter(p=>p.contrato_id===c.id)
+    const totalPrevistoC=previsoesC.filter(p=>p.status==='planejado'||p.status==='em_execucao').reduce((s,p)=>s+Number(p.valor_previsto||0),0)
+    const situacaoC = calcularSituacaoPeriodos(c, adisC, medicoesC)
     let vigVigR=c.data_vencimento; adisC.filter(a=>(a.tipo==='prazo'||a.tipo==='prazo_valor')&&a.nova_vigencia).sort((a,b)=>new Date(a.data_assinatura)-new Date(b.data_assinatura)).forEach(a=>{vigVigR=a.nova_vigencia})
-    return { ...c, empenhos:(es||[]).filter(e=>e.contrato_id===c.id), medicoes:(ms||[]).filter(m=>m.contrato_id===c.id), aditivos:adisC, totalEmp:(es||[]).filter(e=>e.contrato_id===c.id).reduce((a,e)=>a+Number(e.valor),0), totalMed:(ms||[]).filter(m=>m.contrato_id===c.id).reduce((a,m)=>a+Number(m.valor),0), valorAnualVigente:Number(c.valor_anual||0)+valorAnualAdsR, vigenciaVigente:vigVigR }
+    const totalEmpC=(es||[]).filter(e=>e.contrato_id===c.id).reduce((a,e)=>a+Number(e.valor),0)
+    const totalMedC=medicoesC.reduce((a,m)=>a+Number(m.valor),0)
+    return { ...c, empenhos:(es||[]).filter(e=>e.contrato_id===c.id), medicoes:medicoesC, aditivos:adisC, previsoes:previsoesC, totalPrevisto:totalPrevistoC, totalEmp:totalEmpC, totalMed:totalMedC, valorAnualVigente:situacaoC.valorPeriodoAtual, medidoPeriodoAtual:situacaoC.medidoPeriodoAtual, vigenciaVigente:vigVigR, saldoProjetadoEmpenho:(totalEmpC-totalMedC)-totalPrevistoC }
   })
 
   // Gerar alertas
   const alertas = []
   contratos.forEach(c => {
-    const sal=c.totalEmp-c.totalMed; const dias=diasAteR(c.data_vencimento)
-    const anual=Number(c.valor_anual||0); const loa=Number(c.loa_2026||0)
-    const percAnual=anual>0?c.totalMed/anual*100:0
+    const sal=c.totalEmp-c.totalMed; const dias=diasAteR(c.vigenciaVigente||c.data_vencimento)
+    const anual=c.valorAnualVigente||0; const loa=Number(c.loa_2026||0)
+    const percAnual=anual>0?c.medidoPeriodoAtual/anual*100:0
     const percLoa=loa>0?c.totalEmp/loa*100:0
     if (c.totalEmp>0&&sal<0) alertas.push({tipo:'CRITICO',contrato:c.numero,empresa:c.empresa,msg:`Saldo de empenho NEGATIVO: ${fmtR(sal)}`})
     else if (c.totalEmp>0&&sal<Number(c.valor_mensal_previsto||0)) alertas.push({tipo:'CRITICO',contrato:c.numero,empresa:c.empresa,msg:`Saldo de empenho insuficiente: ${fmtR(sal)}`})
     else if (c.totalEmp>0&&sal<Number(c.valor_mensal_previsto||0)*2) alertas.push({tipo:'ATENCAO',contrato:c.numero,empresa:c.empresa,msg:`Saldo de empenho baixo: ${fmtR(sal)}`})
-    if (anual>0&&percAnual>=100) alertas.push({tipo:'CRITICO',contrato:c.numero,empresa:c.empresa,msg:`Total medido ultrapassou o valor anual do contrato`})
-    else if (anual>0&&percAnual>=80) alertas.push({tipo:'ATENCAO',contrato:c.numero,empresa:c.empresa,msg:`${percAnual.toFixed(0)}% do valor anual ja executado — saldo: ${fmtR(anual-c.totalMed)}`})
+    if (c.totalPrevisto>0&&c.saldoProjetadoEmpenho<0) alertas.push({tipo:'CRITICO',contrato:c.numero,empresa:c.empresa,msg:`Empenho insuficiente para cobrir servicos previstos — reforcar em ${fmtR(Math.abs(c.saldoProjetadoEmpenho))}`})
+    if (anual>0&&percAnual>=100) alertas.push({tipo:'CRITICO',contrato:c.numero,empresa:c.empresa,msg:`Total medido no periodo ultrapassou o valor do periodo vigente`})
+    else if (anual>0&&percAnual>=80) alertas.push({tipo:'ATENCAO',contrato:c.numero,empresa:c.empresa,msg:`${percAnual.toFixed(0)}% do valor do periodo ja executado — saldo: ${fmtR(anual-c.medidoPeriodoAtual)}`})
     if (loa>0&&percLoa>=100) alertas.push({tipo:'CRITICO',contrato:c.numero,empresa:c.empresa,msg:`Total empenhado ultrapassou a LOA 2026`})
     else if (loa>0&&percLoa>=80) alertas.push({tipo:'ATENCAO',contrato:c.numero,empresa:c.empresa,msg:`${percLoa.toFixed(0)}% da LOA ja empenhado — saldo LOA: ${fmtR(loa-c.totalEmp)}`})
     if (c.data_vencimento&&dias>=0&&dias<=30) alertas.push({tipo:'CRITICO',contrato:c.numero,empresa:c.empresa,msg:`Vence em ${dias} dia(s) — providencie renovacao`})
-    else if (c.data_vencimento&&dias>30&&dias<=120) alertas.push({tipo:'ATENCAO',contrato:c.numero,empresa:c.empresa,msg:`Vence em ${dias} dias (${fmtD(c.data_vencimento)})`})
+    else if (c.data_vencimento&&dias>30&&dias<=120) alertas.push({tipo:'ATENCAO',contrato:c.numero,empresa:c.empresa,msg:`Vence em ${dias} dias (${fmtD(c.vigenciaVigente||c.data_vencimento)})`})
   })
 
   const tEmp=contratos.reduce((a,c)=>a+c.totalEmp,0)
   const tMed=contratos.reduce((a,c)=>a+c.totalMed,0)
   const tLoa=contratos.reduce((a,c)=>a+Number(c.loa_2026||0),0)
-  const tAnual=contratos.reduce((a,c)=>a+Number(c.valor_anual||0),0)
+  const tAnual=contratos.reduce((a,c)=>a+Number(c.valorAnualVigente||0),0)
   const hoje = new Date().toLocaleDateString('pt-BR')
 
   const html = `<!DOCTYPE html>
@@ -1131,7 +1520,7 @@ async function gerarRelatorio(area) {
     <div class="sum-card"><div class="lbl">Total medido/pago</div><div class="val">${fmtR(tMed)}</div></div>
     <div class="sum-card"><div class="lbl">Saldo total empenhos</div><div class="val" style="color:${tEmp-tMed<0?'#c0392b':'#27500a'}">${fmtR(tEmp-tMed)}</div></div>
     <div class="sum-card"><div class="lbl">LOA 2026 total</div><div class="val">${fmtR(tLoa)}</div></div>
-    <div class="sum-card"><div class="lbl">Valor anual contratos</div><div class="val">${fmtR(tAnual)}</div></div>
+    <div class="sum-card"><div class="lbl">Valor do periodo (contratos)</div><div class="val">${fmtR(tAnual)}</div></div>
     <div class="sum-card"><div class="lbl">Alertas criticos</div><div class="val" style="color:${alertas.filter(a=>a.tipo==='CRITICO').length>0?'#c0392b':'#27500a'}">${alertas.filter(a=>a.tipo==='CRITICO').length}</div></div>
     <div class="sum-card"><div class="lbl">Alertas de atencao</div><div class="val" style="color:${alertas.filter(a=>a.tipo==='ATENCAO').length>0?'#e67e22':'#27500a'}">${alertas.filter(a=>a.tipo==='ATENCAO').length}</div></div>
     <div class="sum-card"><div class="lbl">Total alertas</div><div class="val">${alertas.length}</div></div>
@@ -1152,7 +1541,7 @@ async function gerarRelatorio(area) {
   <h2>Detalhamento por Contrato</h2>
   ${contratos.map(c => {
     const sal=c.totalEmp-c.totalMed
-    const anual=Number(c.valor_anual||0); const loa=Number(c.loa_2026||0)
+    const anual=Number(c.valorAnualVigente||0); const loa=Number(c.loa_2026||0)
     const salCor=sal<0?'vermelho':sal<Number(c.valor_mensal_previsto||0)?'amarelo':'verde'
     let saldoAcum=c.totalEmp
     const medsComSaldo=c.medicoes.map(m=>{ saldoAcum-=Number(m.valor); return {...m,saldoApos:saldoAcum} })
@@ -1166,18 +1555,18 @@ async function gerarRelatorio(area) {
         </div>
         <div style="text-align:right;font-size:10px;color:#555">
           ${c.sei_contrato?`SEI: ${c.sei_contrato}<br>`:''}
-          ${c.data_vencimento?`Vigencia: ${fmtD(c.data_vencimento)}`:''}
+          ${(c.vigenciaVigente||c.data_vencimento)?`Vigencia: ${fmtD(c.vigenciaVigente||c.data_vencimento)}`:''}
           ${c.gestor_nome?`<br>Gestor: ${c.gestor_nome}`:''}
           ${c.fiscal_nome?`<br>Fiscal: ${c.fiscal_nome}`:''}
         </div>
       </div>
       <div class="financeiro-grid">
-        <div class="fin-item"><div class="lbl">Valor anual</div><div class="val">${anual>0?fmtR(anual):'—'}</div></div>
+        <div class="fin-item"><div class="lbl">Valor do periodo vigente</div><div class="val">${anual>0?fmtR(anual):'—'}</div></div>
         <div class="fin-item"><div class="lbl">LOA 2026</div><div class="val">${loa>0?fmtR(loa):'—'}</div></div>
         <div class="fin-item"><div class="lbl">Total empenhado</div><div class="val">${c.totalEmp>0?fmtR(c.totalEmp):'—'}</div></div>
-        <div class="fin-item"><div class="lbl">Total medido</div><div class="val">${fmtR(c.totalMed)}</div></div>
+        <div class="fin-item"><div class="lbl">Medido no periodo</div><div class="val">${fmtR(c.medidoPeriodoAtual)}</div></div>
         <div class="fin-item"><div class="lbl">Saldo empenho</div><div class="val ${salCor}">${fmtR(sal)}</div></div>
-        ${anual>0?`<div class="fin-item"><div class="lbl">Saldo valor anual</div><div class="val ${(anual-c.totalMed)<0?'vermelho':'verde'}">${fmtR(anual-c.totalMed)}</div></div>`:''}
+        ${anual>0?`<div class="fin-item"><div class="lbl">Saldo do periodo</div><div class="val ${(anual-c.medidoPeriodoAtual)<0?'vermelho':'verde'}">${fmtR(anual-c.medidoPeriodoAtual)}</div></div>`:''}
         ${loa>0?`<div class="fin-item"><div class="lbl">Saldo LOA 2026</div><div class="val ${(loa-c.totalEmp)<0?'vermelho':'verde'}">${fmtR(loa-c.totalEmp)}</div></div>`:''}
       </div>
       ${c.empenhos.length>0?`
@@ -1201,6 +1590,28 @@ async function gerarRelatorio(area) {
           <tr style="font-weight:700;background:#e8f0fb"><td colspan="3">Total medido</td><td class="tr">${fmtR(c.totalMed)}</td><td class="tr ${salCor}">${fmtR(sal)}</td><td></td></tr>
         </tbody>
       </table>`:'<div style="font-size:10px;color:#999;margin:4px 0">Nenhuma medicao registrada.</div>'}
+      ${c.aditivos&&c.aditivos.length>0?`
+      <h3>Aditivos</h3>
+      <table>
+        <thead><tr><th>No</th><th>Data</th><th>Tipo</th><th class="tr">Valor acrescido</th><th>Nova vigencia</th><th>Reajuste</th></tr></thead>
+        <tbody>
+          ${c.aditivos.map(a=>`<tr><td>${a.numero}</td><td>${fmtD(a.data_assinatura)}</td><td>${a.tipo==='prazo'?'Prazo':a.tipo==='valor'?'Valor':a.tipo==='reajuste'?'Reajuste':'Prazo+Valor'}</td><td class="tr">${Number(a.valor_acrescido)>0?fmtR(a.valor_acrescido):'—'}</td><td>${a.nova_vigencia?fmtD(a.nova_vigencia):'—'}</td><td>${a.indice_reajuste&&Number(a.percentual_reajuste)>0?a.indice_reajuste+' '+Number(a.percentual_reajuste).toFixed(2)+'%':'—'}</td></tr>`).join('')}
+        </tbody>
+      </table>`:''}
+      ${c.previsoes&&c.previsoes.filter(p=>p.status==='planejado'||p.status==='em_execucao').length>0?`
+      <h3>Orcamentos/Servicos Futuros Previstos</h3>
+      <table>
+        <thead><tr><th>Descricao</th><th>Data prevista</th><th class="tr">Valor previsto</th><th>Status</th></tr></thead>
+        <tbody>
+          ${c.previsoes.filter(p=>p.status==='planejado'||p.status==='em_execucao').map(p=>`<tr><td>${p.descricao}</td><td>${fmtD(p.data_prevista)}</td><td class="tr">${fmtR(p.valor_previsto)}</td><td>${p.status==='planejado'?'Planejado':'Em execucao'}</td></tr>`).join('')}
+          <tr style="font-weight:700;background:#e8f0fb"><td colspan="2">Total previsto</td><td class="tr">${fmtR(c.totalPrevisto)}</td><td></td></tr>
+        </tbody>
+      </table>
+      <div style="font-size:10px;margin-top:4px;padding:4px 8px;border-radius:4px;background:${c.saldoProjetadoEmpenho<0?'#fce8e8':'#eaf3de'}">
+        <strong class="${c.saldoProjetadoEmpenho<0?'vermelho':'verde'}">Saldo projetado de empenho: ${fmtR(c.saldoProjetadoEmpenho)}</strong>
+        ${c.saldoProjetadoEmpenho<0?' — reforco de empenho necessario':' — saldo suficiente para os servicos previstos'}
+      </div>
+      `:''}
     </div>`
   }).join('')}
 
@@ -1257,6 +1668,7 @@ function AppShell() {
         {pagina==='contratos' && <Contratos onVerContrato={handleVerContrato} area={area} key={'c'+area+tick} />}
         {pagina==='alertas'   && <Alertas area={area} key={'a'+area+tick} />}
         {pagina==='orcamento' && <Orcamento area={area} key={'o'+area+tick} />}
+        {pagina==='previsao'  && <Previsao onVerContrato={handleVerContrato} area={area} key={'p'+area+tick} />}
       </main>
       {contratoSel && <ModalDetalhe contratoId={contratoSel} onClose={() => setContratoSel(null)} onAtualizado={handleAtualizado} />}
     </div>
