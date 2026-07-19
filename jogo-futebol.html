@@ -562,9 +562,9 @@ function aiGoleiro(p, dt) {
     vel = DIF[dif].gkVel;
     // desvio lateral grande: SALTA de mão esticada!
     if (Math.abs(tx - p.x) > 34 && p.levant <= 0 && p.mergulhoCd <= 0) {
-      p.mergulho = 0.5; p.mergulhoCd = 1.4;
+      p.mergulho = 0.38; p.mergulhoCd = 1.4;   // saltinho curto de barriga
       p.sdx = Math.sign(tx - p.x); p.sdy = 0;
-      p.vx = p.sdx * DIF[dif].gkVel * 1.5; p.vy = 0;
+      p.vx = p.sdx * DIF[dif].gkVel * 1.15; p.vy = 0;
       return;
     }
   } else if (distGol < BOX_D && Math.hypot(ball.x - p.x, ball.y - p.y) < 160 && ball.x > BOXX0 && ball.x < BOXX1) {
@@ -594,9 +594,19 @@ function fisicaJogador(p, dt) {
   p.mergulhoCd = Math.max(0, (p.mergulhoCd || 0) - dt);
   if (p.mergulho > 0) {        // voo lateral do goleiro
     p.mergulho -= dt;
-    p.vx = p.sdx * DIF[dif].gkVel * 1.5;
-    p.vy = p.sdy * DIF[dif].gkVel * 1.5;
-    if (p.mergulho <= 0) p.levant = 0.4;
+    p.vx = p.sdx * DIF[dif].gkVel * 1.15;
+    p.vy = p.sdy * DIF[dif].gkVel * 1.15;
+    if (p.mergulho <= 0) {     // BARRIGADA no chão!
+      p.levant = 0.5;
+      p.wobble = 1;
+      p.vx = 0; p.vy = 0;
+      somTromba();
+      for (let i = 0; i < 5; i++) particulas.push({ tipo: 'grama',
+        x: p.x + (Math.random() - 0.5) * 26, y: p.y + 8,
+        vx: (Math.random() - 0.5) * 80, vy: -50, vida: 0.5 });
+      if (Math.random() < 0.5) particulas.push({ tipo: 'texto', texto: 'PLOFT!',
+        x: p.x, y: p.y - 34, vx: 0, vy: -30, vida: 0.9 });
+    }
   }
   p.pulo = Math.max(0, p.pulo - dt);
   if (p.bike > 0) {            // girando na bicicleta
@@ -621,6 +631,8 @@ function fisicaJogador(p, dt) {
   if (p.gk) {
     const gy = golDefY(p.side);
     p.y = dirDe(p.side) === -1 ? clamp(p.y, gy - BOX_D - 20, gy - 4) : clamp(p.y, gy + 4, gy + BOX_D + 20);
+    // no mergulho, fica preso à frente do gol
+    if (p.mergulho > 0 || p.levant > 0) p.x = clamp(p.x, GX0 - 8, GX1 + 8);
   } else p.y = clamp(p.y, FY0 + R, FY1 - R);
   const v = Math.hypot(p.vx, p.vy);
   p.fase += v * dt * 0.06;
@@ -994,7 +1006,7 @@ function cobraPenalti() {
   const ladoBola = alvo < CX ? -1 : 1;
   const lado = acerta ? ladoBola : -ladoBola;
   gk.vx = lado * DIF[dif].gkVel * 1.4;
-  gk.mergulho = 0.6; gk.sdx = lado; gk.sdy = 0;   // salto de mão esticada
+  gk.mergulho = 0.45; gk.sdx = lado; gk.sdy = 0;  // saltinho de barriga
   chutar(pe.taker, alvo, golY, 545, true);
   pe.fase = 'voo'; pe.timer = 0;
 }
@@ -1370,8 +1382,8 @@ function drawGordinho(p) {
     const pr = 1 - p.bike / 0.55;
     ctx.translate(0, -Math.sin(pr * Math.PI) * 22);
     ctx.rotate(Math.PI * pr);
-  } else if (p.mergulho > 0) {  // goleiro voando de lado
-    ctx.translate(0, -Math.sin(Math.min(1, (0.6 - p.mergulho) / 0.6) * Math.PI) * 18);
+  } else if (p.mergulho > 0) {  // goleiro num voo baixinho de barriga
+    ctx.translate(0, -Math.sin(clamp(1 - p.mergulho / 0.45, 0, 1) * Math.PI) * 9);
     ctx.rotate(Math.atan2(p.sdy, p.sdx) - 1.5708);
   } else if (deitado) ctx.rotate(Math.atan2(p.sdy, p.sdx) - 1.5708);
   else if (p.pulo > 0) ctx.translate(0, -Math.sin((0.4 - p.pulo) / 0.4 * Math.PI) * 13);
