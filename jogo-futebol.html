@@ -157,6 +157,7 @@ let dif = 1;
 let modo = 'amistoso';
 let formEscolhida = '4-3-2';
 let selUser = 0, selAdv = 1;
+let kitUser = 0, jogoPend = null;
 let escolhendo = 'user';
 let copa = null;
 let M = null;
@@ -196,7 +197,9 @@ function iniciarPartida(iA, iB) {
   M = { iA, iB, placar: [0, 0], tempo: 0, half: 1, inv: false, estado: 'abertura', parada: null,
     pen: null, disputa: null, aviso: '', avisoT: 0, golTimer: 0, fraseGol: '', saida: 0, timer: 0,
     formA: formEscolhida, subs: 0, taticaPrev: null, selTit: -1,
+    kitA: kitUser, kitB: 0,
     ab: { fase: 0, timer: 0, zoom: 0 }, bancos: [[], []], tecs: [] };
+  M.kitB = kitCpu(iA, M.kitA, iB);
   players = [];
   [iA, iB].forEach((idx, side) => {
     const el = elenco(SELECOES[idx]);
@@ -1249,7 +1252,7 @@ function prepararMundo() {
   mundoCanvas = document.createElement('canvas');
   mundoCanvas.width = WW; mundoCanvas.height = WH;
   const g = mundoCanvas.getContext('2d');
-  const A = SELECOES[M.iA], B = SELECOES[M.iB];
+  const KA = corTime(0), KB = corTime(1);
   g.fillStyle = '#1a2a20'; g.fillRect(0, 0, WW, WH);
   // arquibancadas com torcida (pontinhos coloridos das duas torcidas)
   const arqs = [
@@ -1258,7 +1261,7 @@ function prepararMundo() {
     [8, FY0 - 40, 34, FLEN + 80],
     [WW - 42, FY0 - 40, 34, FLEN + 80]
   ];
-  const cores = [A.c1, A.c2, B.c1, B.c2, '#e8e8e8', '#c9c9c9', '#8d5524', '#f1c27d', '#555'];
+  const cores = [KA[0], KA[1], KB[0], KB[1], '#e8e8e8', '#c9c9c9', '#8d5524', '#f1c27d', '#555'];
   for (const [ax, ay, aw, ah] of arqs) {
     g.fillStyle = '#2c3e33'; g.fillRect(ax, ay, aw, ah);
     const n = Math.floor(aw * ah / 50);
@@ -1333,7 +1336,7 @@ function prepararMundo() {
     const bx = side === 0 ? 46 : WW - 90;
     g.fillStyle = 'rgba(0,0,0,0.35)';
     roundRectG(g, bx, CYW - 170, 44, 340, 8); g.fill();
-    g.fillStyle = side === 0 ? A.c2 : B.c2;
+    g.fillStyle = side === 0 ? KA[1] : KB[1];
     g.globalAlpha = 0.5;
     roundRectG(g, bx, CYW - 170, 44, 16, 8); g.fill();
     g.globalAlpha = 1;
@@ -1360,8 +1363,8 @@ function drawCampo() {
 }
 
 function drawGordinho(p) {
-  const sel = SELECOES[p.side === 0 ? M.iA : M.iB];
-  const c1 = p.gk ? '#3d3d3d' : sel.c1, c2 = p.gk ? '#111' : sel.c2;
+  const tc = corTime(p.side);
+  const c1 = p.gk ? '#3d3d3d' : tc[0], c2 = p.gk ? '#111' : tc[1];
   const pele = TONS[p.tom];
   const v = Math.hypot(p.vx, p.vy);
   const andando = v > 25;
@@ -1818,7 +1821,8 @@ function escolheu(i) {
     else escolhendo = 'adv';
   } else {
     selAdv = i;
-    iniciarPartida(selUser, selAdv);
+    jogoPend = { a: selUser, b: selAdv };
+    tela = 'uniforme';
   }
 }
 
@@ -1878,7 +1882,7 @@ function drawCopa() {
       const adv = advDaRodada();
       ctx.font = 'bold 18px "Segoe UI",Arial'; ctx.fillStyle = '#ffd166';
       ctx.fillText('Próximo jogo: ' + SELECOES[selUser].n + ' × ' + SELECOES[adv].n, W / 2, 420);
-      botao(W / 2 - 130, 460, 260, 58, '⚽ JOGAR PARTIDA', () => iniciarPartida(selUser, adv), '#e07b00');
+      botao(W / 2 - 130, 460, 260, 58, '⚽ JOGAR PARTIDA', () => { jogoPend = { a: selUser, b: adv }; tela = 'uniforme'; }, '#e07b00');
     }
   } else {
     ctx.font = 'bold 22px "Segoe UI",Arial'; ctx.fillStyle = '#fff';
@@ -1888,7 +1892,7 @@ function drawCopa() {
     ctx.fillText(a.n + '  ×  ' + b.n, W / 2, 260);
     ctx.font = '15px "Segoe UI",Arial'; ctx.fillStyle = '#cde';
     ctx.fillText('Mata-mata: empate vai para os pênaltis!', W / 2, 310);
-    botao(W / 2 - 130, 380, 260, 58, '⚽ JOGAR PARTIDA', () => iniciarPartida(selUser, copa.adv), '#e07b00');
+    botao(W / 2 - 130, 380, 260, 58, '⚽ JOGAR PARTIDA', () => { jogoPend = { a: selUser, b: copa.adv }; tela = 'uniforme'; }, '#e07b00');
   }
   botao(W / 2 - 60, H - 70, 120, 44, 'Menu', () => { tela = 'menu'; }, '#555');
 }
@@ -1907,7 +1911,7 @@ function drawFimJogo() {
     ga < gb ? 'Faltou fôlego... menos coxinha no vestiário!' :
     'Empate! Ninguém venceu, todo mundo saiu com fome.';
   ctx.fillText(msg, W / 2, 310);
-  botao(W / 2 - 130, 420, 260, 56, '🔁 Revanche', () => iniciarPartida(M.iA, M.iB));
+  botao(W / 2 - 130, 420, 260, 56, '🔁 Revanche', () => { jogoPend = { a: M.iA, b: M.iB }; tela = 'uniforme'; });
   botao(W / 2 - 130, 500, 260, 56, 'Menu principal', () => { tela = 'menu'; }, '#555');
 }
 
@@ -1918,6 +1922,7 @@ function draw() {
   else if (tela === 'menu') drawMenu();
   else if (tela === 'selecao') drawSelecao();
   else if (tela === 'copa') drawCopa();
+  else if (tela === 'uniforme') drawUniforme();
   else if (tela === 'fimjogo') drawFimJogo();
 }
 
@@ -2145,7 +2150,7 @@ function drawMiniGordo(x, y, c1, c2, tom, cab, esc, braco) {
   ctx.beginPath(); ctx.moveTo(-10, -2); ctx.lineTo(-14, 4 - braco * 20); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(10, -2); ctx.lineTo(14, 4 + braco * 20); ctx.stroke();
   const g2 = ctx.createRadialGradient(-3, -4, 2, 0, 0, 15);
-  g2.addColorStop(0, c1); g2.addColorStop(1, c2);
+  g2.addColorStop(0, c1); g2.addColorStop(0.72, c1); g2.addColorStop(1, c2);
   ctx.fillStyle = g2;
   ctx.beginPath(); ctx.ellipse(0, 2, 11.5, 10.5, 0, 0, 6.29); ctx.fill();
   ctx.fillStyle = pele;
@@ -2163,7 +2168,7 @@ function drawBancos() {
   ctx.lineWidth = 2;
   for (const side of [0, 1]) {
     const bx = side === 0 ? 68 : WW - 68;
-    const sel = SELECOES[side === 0 ? M.iA : M.iB];
+    const tc = corTime(side);
     const tec = M.tecs[side];
     // técnico de pé, gesticulando com a partida
     drawMiniGordo(bx, CYW - 205, '#2b2b2b', '#101010', tec.tom, '#1a1a1a', 1, Math.sin(clock * 3 + side * 2) * 0.3);
@@ -2175,7 +2180,7 @@ function drawBancos() {
     // reservas sentados no banco
     M.bancos[side].forEach((r2, i) => {
       const ry = CYW - 135 + i * 62;
-      drawMiniGordo(bx, ry, sel.c1, sel.c2, r2.tom, r2.cab, 0.82, 0);
+      drawMiniGordo(bx, ry, tc[0], tc[1], r2.tom, r2.cab, 0.82, 0);
       ctx.font = '7.5px Arial'; ctx.fillStyle = '#fff';
       ctx.strokeText(r2.nome, bx, ry + 25);
       ctx.fillText(r2.nome, bx, ry + 25);
@@ -2286,8 +2291,8 @@ function drawTelao() {
   ctx.textAlign = 'center';
   ctx.fillStyle = '#ffd166';
   ctx.fillText('📺 TELÃO DA ARENA PANZUDA', W / 2, y0 + 24);
-  const sel = SELECOES[aut.side === 0 ? M.iA : M.iB];
-  drawMiniGordo(W / 2 - 100, y0 + 90, aut === M.golContra ? '#777' : sel.c1, sel.c2, aut.tom, aut.cab, 1.6, Math.sin(clock * 6) * 0.2);
+  const tc = corTime(aut.side);
+  drawMiniGordo(W / 2 - 100, y0 + 90, tc[0], tc[1], aut.tom, aut.cab, 1.6, Math.sin(clock * 6) * 0.2);
   const mastiga = Math.sin(clock * 14) * 3;
   ctx.font = (26 + mastiga) + 'px Arial';
   ctx.fillText('🍔', W / 2 - 58, y0 + 82);
@@ -2300,6 +2305,96 @@ function drawTelao() {
   ctx.font = '11px "Segoe UI",Arial';
   ctx.fillStyle = 'rgba(255,255,255,0.6)';
   ctx.fillText('lanche oferecido por X-Burguer do 9', W / 2, y0 + 136);
+}
+
+// ================== 2º uniforme das seleções ==================
+const KIT2 = {
+BRA:['#1a44a8','#ffdc00'],ARG:['#2b2d55','#8fc6e8'],URU:['#ffffff','#5b9bd5'],
+COL:['#243b8f','#ffd700'],ECU:['#1d3557','#ffd100'],PAR:['#ffffff','#d0103a'],
+BOL:['#ffffff','#007a33'],FRA:['#ffffff','#1c2f6b'],ING:['#c8102e','#ffffff'],
+ESP:['#7cc3e8','#c60b1e'],ALE:['#0b5e4a','#ffffff'],POR:['#ffffff','#c00d2e'],
+HOL:['#1d3557','#f36c21'],BEL:['#ffffff','#e30613'],CRO:['#171796','#ffffff'],
+SUI:['#ffffff','#d52b1e'],AUT:['#ffffff','#c8102e'],ESC:['#ffffff','#0a2351'],
+NOR:['#ffffff','#c8102e'],ITA:['#ffffff','#0066bc'],DIN:['#ffffff','#c60c30'],
+POL:['#dc143c','#ffffff'],TUR:['#ffffff','#e30a17'],MAR:['#ffffff','#c1272d'],
+SEN:['#00853f','#fdef42'],EGI:['#ffffff','#ce1126'],'ARG.':['#006633','#ffffff'],
+TUN:['#ffffff','#e70013'],GAN:['#ce1126','#fcd116'],CIV:['#ffffff','#ff8200'],
+CVD:['#ffffff','#003893'],AFS:['#007749','#ffb612'],RDC:['#f7d618','#0085ca'],
+JAP:['#ffffff','#0a1f8f'],COR:['#ffffff','#e6002d'],IRA:['#c8102e','#ffffff'],
+AUS:['#0b5e4a','#ffb81c'],UZB:['#0099b5','#ffffff'],JOR:['#ffffff','#ce1126'],
+CAT:['#ffffff','#8a1538'],SAU:['#ffffff','#006c35'],EUA:['#1d3660','#ffffff'],
+MEX:['#ffffff','#006847'],CAN:['#ffffff','#c8102e'],PAN:['#ffffff','#da121a'],
+CUR:['#f9e814','#002b7f'],HAI:['#ffffff','#00209f'],NZL:['#111111','#ffffff']
+};
+
+function kit(i, n) {
+  const sel = SELECOES[i];
+  if (!n) return [sel.c1, sel.c2];
+  return KIT2[sel.s] || [sel.c2, sel.c1];
+}
+function corTime(side) {
+  if (!M) return ['#888', '#555'];
+  return kit(side === 0 ? M.iA : M.iB, side === 0 ? M.kitA : M.kitB);
+}
+function corDist(a, b) {
+  const pa = parseInt(a.slice(1), 16), pb = parseInt(b.slice(1), 16);
+  return Math.hypot((pa >> 16) - (pb >> 16), ((pa >> 8) & 255) - ((pb >> 8) & 255), (pa & 255) - (pb & 255));
+}
+// CPU troca de uniforme se as camisas ficarem parecidas
+function kitCpu(iA, kA, iB) {
+  const minha = kit(iA, kA)[0];
+  const d0 = corDist(minha, kit(iB, 0)[0]);
+  if (d0 >= 140) return 0;
+  return corDist(minha, kit(iB, 1)[0]) > d0 ? 1 : 0;
+}
+
+// ================== Tela de escolha de uniforme ==================
+function drawUniforme() {
+  fundoMenu();
+  if (!jogoPend) { tela = 'menu'; return; }
+  const a = SELECOES[jogoPend.a], b = SELECOES[jogoPend.b];
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 24px "Segoe UI",Arial'; ctx.fillStyle = '#ffd166';
+  ctx.fillText('Escolha o seu uniforme', W / 2, 50);
+  drawBandeira(W / 2 - 170, 76, 64, 42, a.s);
+  drawBandeira(W / 2 + 106, 76, 64, 42, b.s);
+  ctx.font = 'bold 17px "Segoe UI",Arial'; ctx.fillStyle = '#fff';
+  ctx.fillText(a.n + '  ×  ' + b.n, W / 2, 104);
+
+  // dois cartões de uniforme do jogador
+  for (const n of [0, 1]) {
+    const x = 40 + n * 240, y = 160, w = 220, h = 290;
+    const cores = kit(jogoPend.a, n);
+    ctx.fillStyle = kitUser === n ? 'rgba(255,209,102,0.25)' : 'rgba(255,255,255,0.08)';
+    roundRect(x, y, w, h, 14); ctx.fill();
+    ctx.strokeStyle = kitUser === n ? '#ffd166' : 'rgba(255,255,255,0.25)';
+    ctx.lineWidth = kitUser === n ? 4 : 2;
+    roundRect(x, y, w, h, 14); ctx.stroke();
+    drawMiniGordo(x + w / 2, y + 130, cores[0], cores[1], 2, '#2a1a10', 3.4, 0);
+    ctx.font = 'bold 16px "Segoe UI",Arial';
+    ctx.fillStyle = '#fff'; ctx.textAlign = 'center';
+    ctx.fillText(n === 0 ? '1º uniforme' : '2º uniforme', x + w / 2, y + 250);
+    if (kitUser === n) {
+      ctx.font = '13px "Segoe UI",Arial'; ctx.fillStyle = '#ffd166';
+      ctx.fillText('✓ escolhido', x + w / 2, y + 272);
+    }
+    botoes.push({ x, y, w, h, cb: () => { kitUser = n; } });
+  }
+
+  // preview do adversário (uniforme anti-conflito automático)
+  const kb = kitCpu(jogoPend.a, kitUser, jogoPend.b);
+  const coresB = kit(jogoPend.b, kb);
+  ctx.font = 'bold 15px "Segoe UI",Arial'; ctx.fillStyle = '#9fc'; ctx.textAlign = 'center';
+  ctx.fillText('O adversário entra assim:', W / 2, 505);
+  drawMiniGordo(W / 2, 570, coresB[0], coresB[1], 2, '#2a1a10', 2.4, 0);
+  ctx.font = '13px "Segoe UI",Arial'; ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.fillText(b.n + ' · ' + (kb === 0 ? '1º' : '2º') + ' uniforme' + (kb === 1 ? ' (trocou para não confundir!)' : ''), W / 2, 625);
+
+  botao(W / 2 - 130, H - 220, 260, 60, '⚽ JOGAR', () => iniciarPartida(jogoPend.a, jogoPend.b), '#e07b00');
+  botao(W / 2 - 70, H - 140, 140, 46, 'Voltar', () => {
+    tela = modo === 'copa' ? 'copa' : 'selecao';
+    escolhendo = 'adv';
+  }, '#555');
 }
 </script>
 </body>
