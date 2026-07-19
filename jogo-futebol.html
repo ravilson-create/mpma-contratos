@@ -108,6 +108,15 @@ const BOXX0 = CX - 210, BOXX1 = CX + 210, BOX_D = 170, PEN_DIST = 113;
 const R = 15, BR = 8;
 const HALF_LEN = 120;
 
+// força das seleções (ranking/tradição): 5 = elite, 2 = azarão
+const FORCA = { BRA:5, ARG:5, FRA:5, ESP:5, ING:4.5, ALE:4.5, POR:4.5, HOL:4, BEL:4,
+  ITA:4, CRO:4, URU:4, COL:4, MAR:4, MEX:3.5, EUA:3.5, JAP:3.5, SEN:3.5, SUI:3.5,
+  DIN:3.5, TUR:3.5, NOR:3.5, AUT:3.5, ECU:3.5, COR:3.5, CIV:3.5, POL:3, ESC:3,
+  PAR:3, IRA:3, AUS:3, EGI:3, GAN:3, 'ARG.':3, TUN:2.5, SAU:2.5, UZB:2.5, RDC:2.5,
+  PAN:2.5, AFS:2.5, CAT:2, JOR:2, BOL:2, CVD:2, CUR:2, HAI:2, NZL:2 };
+function forcaDe(i) { return FORCA[SELECOES[i].s] || 2.5; }
+function multDe(i) { return 0.82 + 0.07 * forcaDe(i); }
+
 const DIF = [
   { nome: 'Fácil',   vel: 148, erro: 130, gkVel: 235, gkAlc: 24, chute: 480, pen: 0.35, penCpu: 0.55 },
   { nome: 'Médio',   vel: 174, erro: 85,  gkVel: 320, gkAlc: 28, chute: 545, pen: 0.50, penCpu: 0.68 },
@@ -149,6 +158,24 @@ function somApito()  { beep(2200, 0.35, 'square', 0.06); }
 function somApito2() { beep(2200, 0.15, 'square', 0.06); setTimeout(() => beep(2200, 0.4, 'square', 0.06), 220); }
 function somGol() {
   [523, 659, 784, 1046].forEach((f, i) => setTimeout(() => beep(f, 0.18, 'square', 0.07), i * 110));
+}
+function somTorcida(vol, dur, freq) {
+  if (!actx) return;
+  const n = Math.floor(actx.sampleRate * dur);
+  const buf = actx.createBuffer(1, n, actx.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+  const srcN = actx.createBufferSource();
+  srcN.buffer = buf;
+  const filt = actx.createBiquadFilter();
+  filt.type = 'lowpass';
+  filt.frequency.value = freq || 900;
+  const g = actx.createGain();
+  g.gain.setValueAtTime(0.001, actx.currentTime);
+  g.gain.exponentialRampToValueAtTime(vol, actx.currentTime + dur * 0.25);
+  g.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + dur);
+  srcN.connect(filt); filt.connect(g); g.connect(actx.destination);
+  srcN.start();
 }
 
 // ---------------- Estado geral ----------------
@@ -197,7 +224,7 @@ function iniciarPartida(iA, iB) {
   M = { iA, iB, placar: [0, 0], tempo: 0, half: 1, inv: false, estado: 'abertura', parada: null,
     pen: null, disputa: null, aviso: '', avisoT: 0, golTimer: 0, fraseGol: '', saida: 0, timer: 0,
     formA: formEscolhida, subs: 0, taticaPrev: null, selTit: -1,
-    kitA: kitUser, kitB: 0,
+    kitA: kitUser, kitB: 0, mult: [multDe(iA), multDe(iB)], prorrog: false,
     ab: { fase: 0, timer: 0, zoom: 0 }, bancos: [[], []], tecs: [] };
   M.kitB = kitCpu(iA, M.kitA, iB);
   players = [];
@@ -483,13 +510,14 @@ function perseguidor(side) {
 function aiLinha(p, dt) {
   const d = dirDe(p.side);
   const cpu = p.side === 1;
-  const vel = cpu ? DIF[dif].vel : 172;
+  const vel = (cpu ? DIF[dif].vel : 172) * M.mult[p.side];
   p.ruidoT -= dt;
   if (p.ruidoT <= 0) { p.ruidoT = 0.6 + Math.random(); p.rx = (Math.random() - 0.5) * 55; p.ry = (Math.random() - 0.5) * 55; }
 
   const per = perseguidor(p.side);
   const db = Math.hypot(ball.x - p.x, ball.y - p.y);
   const golY = golAtkY(p.side);
+  const fm = M.mult[p.side];
   let tx, ty;
 
   const defendendo = dirDe(p.side) === -1 ? ball.y > CYW + 100 : ball.y < CYW - 100;
@@ -511,7 +539,7 @@ function aiLinha(p, dt) {
     if (db < R + BR + 9 && p.chuteCd <= 0) {
       const dg = Math.abs(golY - p.y);
       if (dg < 330) {
-        const alvo = GX0 + 15 + Math.random() * (GW - 30) + (Math.random() - 0.5) * DIF[dif].erro * (cpu ? 1 : 0.5);
+        const alvo = GX0 + 15 + Math.random() * (GW - 30) + (Math.random() - 0.5) * DIF[dif].erro * (cpu ? 2 - fm : 0.5);
         chutar(p, alvo, golY, DIF[dif].chute + Math.random() * 60, false, dg > 220 ? 110 : 0);
       } else if (Math.random() < 0.45) aiPasse(p, false, 0);
       else if (ball.dono !== p) chutar(p, p.x + (Math.random() - 0.5) * 130, p.y + d * 190, 245, true);
@@ -544,8 +572,13 @@ function aiGoleiro(p, dt) {
     p.holdT -= dt;
     ball.x = p.x; ball.y = p.y + dirDe(p.side) * (R + BR);
     ball.vx = 0; ball.vy = 0;
-    p.vx *= 0.9; p.vy *= 0.9;
-    if (p.holdT <= 0) {
+    // sai jogando: caminha com a bola até a entrada da área
+    const alvoY = golDefY(p.side) + dirDe(p.side) * (BOX_D - 25);
+    const alvoX = clamp(CX + (p.x - CX) * 0.4, BOXX0 + 40, BOXX1 - 40);
+    const ddx = alvoX - p.x, ddy = alvoY - p.y, ddl = Math.hypot(ddx, ddy);
+    if (ddl > 14) { p.vx = ddx / ddl * 150; p.vy = ddy / ddl * 150; p.fase += 9 * dt; }
+    else { p.vx *= 0.8; p.vy *= 0.8; }
+    if (p.holdT <= 0 || ddl <= 14) {
       anunciar('CHUTÃO!');
       chutar(p, FX0 + 70 + Math.random() * (FWID - 140), p.y + dirDe(p.side) * FLEN * 0.55, 640, false, 300);
     }
@@ -558,11 +591,11 @@ function aiGoleiro(p, dt) {
   // a bola cruzaria a linha dentro do gol? (senão, nada de mergulho à toa)
   const tAr = Math.abs((linhaY - ball.y) / (ball.vy || 1));
   const ix = ball.x + ball.vx * tAr;
-  const rumoAoGol = vindo && vBola > 240 && tAr < 1.1 && ix > GX0 - 24 && ix < GX1 + 24;
+  const rumoAoGol = !ball.dono && vindo && vBola > 330 && tAr < 1.1 && ix > GX0 - 24 && ix < GX1 + 24;
   if (rumoAoGol && distGol < 430) {
     tx = clamp(ix, GX0 + 8, GX1 - 8);
     ty = linhaY;
-    vel = DIF[dif].gkVel;
+    vel = DIF[dif].gkVel * M.mult[p.side];
     // desvio lateral grande: SALTA de mão esticada!
     if (Math.abs(tx - p.x) > 34 && p.levant <= 0 && p.mergulhoCd <= 0) {
       p.mergulho = 0.38; p.mergulhoCd = 1.4;   // saltinho curto de barriga
@@ -763,6 +796,9 @@ function fisicaBola(dt) {
       return;
     }
     // linha de fundo (topo = ataca o gol de cima; defende-o o outro time)
+    const pertoDaTrave = ball.x > GX0 - 75 && ball.x < GX1 + 75;
+    if ((ball.y < FY0 - BR || ball.y > FY1 + BR) && pertoDaTrave && Math.hypot(ball.vx, ball.vy) > 250)
+      somTorcida(0.13, 0.9, 750);   // UUUH da torcida no quase-gol
     if (!naBoca && ball.y < FY0 - BR) {
       if (ball.lastSide === topo) { anunciar('TIRO DE META'); pararJogo('meta', 1 - topo, CX + (ball.x < CX ? -55 : 55), FY0 + 35); }
       else { anunciar('ESCANTEIO'); pararJogo('escanteio', topo, ball.x < CX ? FX0 + 12 : FX1 - 12, FY0 + 12); }
@@ -794,8 +830,9 @@ function fisicaBola(dt) {
     }
     if (p.gk && vBola < 195 && ball.z < 50 && ball.dono === null && Math.abs(ball.y - golDefY(p.side)) < BOX_D + 30) {
       if (!tocou(p)) {
-        ball.dono = p; p.holdT = 0.9; ball.vx = 0; ball.vy = 0;
+        ball.dono = p; p.holdT = 2.2; ball.vx = 0; ball.vy = 0;
         anunciar('SEGUROU!');
+        somTorcida(0.1, 0.8, 700);
       }
       return;
     }
@@ -827,7 +864,7 @@ function pararJogo(tipo, side, x, y, jaAnunciado) {
   }
   if (side === 0 && !taker.gk) ctrl = taker;
   M.estado = 'parada';
-  M.parada = { tipo, side, taker, timer: 0 };
+  M.parada = { tipo, side, taker, timer: 0, px: ball.x, py: ball.y };
   taker.arremesso = tipo === 'lateral';
   if (tipo === 'falta') {
     // falta ensaiada com barreira: só pertinho da área
@@ -883,8 +920,8 @@ function updateParada(dt) {
     p.x += p.vx * dt; p.y += p.vy * dt;
     p.fase += Math.hypot(p.vx, p.vy) * dt * 0.06;
   }
-  // cobrador vai até a bola
-  const sx = ball.x, sy = ball.y - dirDe(pa.side) * (R + BR + (pa.ensaiada ? 16 : 2));
+  // cobrador vai até o ponto fixo da cobrança
+  const sx = pa.px, sy = pa.py - dirDe(pa.side) * (R + BR + (pa.ensaiada ? 16 : 2));
   const dx = sx - t.x, dy = sy - t.y, dl = Math.hypot(dx, dy);
   if (dl > 6) {
     t.vx = dx / dl * 210; t.vy = dy / dl * 210;
@@ -936,6 +973,7 @@ function updateParada(dt) {
 }
 
 function gol(side) {
+  if (M.disputa && M.pen && M.pen.disp) { resolveDisputa(true); return; }
   M.placar[side]++;
   const autor = ball.lastP && !ball.lastP.fora ? ball.lastP : null;
   M.autor = autor && autor.side === side ? autor : null;
@@ -944,6 +982,7 @@ function gol(side) {
   M.fraseGol = M.golContra ? 'GOL CONTRA!' : FRASES_GOL[Math.floor(Math.random() * FRASES_GOL.length)];
   M.estado = 'gol'; M.golTimer = 3; M.saida = 1 - side; M.pen = null;
   somGol();
+  somTorcida(0.28, 2.4, 1100);   // estádio explode
   for (let i = 0; i < 90; i++) confetes.push({
     x: Math.random() * W, y: -20 - Math.random() * 200,
     vx: (Math.random() - 0.5) * 60, vy: 130 + Math.random() * 160,
@@ -952,7 +991,7 @@ function gol(side) {
   });
 }
 
-function iniciarPenalti(atk) {
+function iniciarPenalti(atk, disp) {
   const defSide = 1 - atk;
   const golY = golDefY(defSide);
   const spotY = golY + dirDe(defSide) * PEN_DIST;
@@ -970,8 +1009,8 @@ function iniciarPenalti(atk) {
       p.y = golY + dirDe(defSide) * (BOX_D + 60 + Math.random() * 60);
   }
   M.estado = 'penalti';
-  M.pen = { atk, fase: 'prep', timer: 0, mira: CX, taker, gk };
-  anunciar('PÊNALTI!');
+  M.pen = { atk, fase: 'prep', timer: 0, mira: CX, taker, gk, disp: !!disp, escolha: 0 };
+  if (!disp) anunciar('PÊNALTI!');
 }
 
 function updatePenalti(dt) {
@@ -984,9 +1023,16 @@ function updatePenalti(dt) {
       if (joy.ativo) pe.mira = CX + clamp(joy.dx / 55, -1, 1) * (GW / 2 - 14);
       pe.mira = clamp(pe.mira, GX0 + 12, GX1 - 12);
       if (acaoChute) cobraPenalti();
-    } else if (pe.timer > 1.3) {
-      pe.mira = GX0 + 14 + Math.random() * (GW - 28);
-      cobraPenalti();
+    } else {
+      if (pe.disp) {   // escolha o canto do seu goleiro!
+        if (keys['arrowleft'] || keys['a']) pe.escolha = -1;
+        if (keys['arrowright'] || keys['d']) pe.escolha = 1;
+        if (joy.ativo && Math.abs(joy.dx) > 20) pe.escolha = Math.sign(joy.dx);
+      }
+      if (pe.timer > (pe.disp ? 2.3 : 1.3)) {
+        pe.mira = GX0 + 14 + Math.random() * (GW - 28);
+        cobraPenalti();
+      }
     }
   } else {
     const gk = pe.gk;
@@ -994,7 +1040,10 @@ function updatePenalti(dt) {
     gk.vx *= Math.max(0, 1 - 1.5 * dt);
     if (gk.mergulho > 0) { gk.mergulho -= dt; if (gk.mergulho <= 0) gk.levant = 0.4; }
     fisicaBola(dt);
-    if (pe.timer > 1.6 && M.estado === 'penalti') { M.pen = null; M.estado = 'play'; }
+    if (pe.timer > 1.6 && M.estado === 'penalti') {
+      if (pe.disp) resolveDisputa(false);
+      else { M.pen = null; M.estado = 'play'; }
+    }
   }
 }
 
@@ -1005,9 +1054,10 @@ function cobraPenalti() {
   if (pe.atk === 1) alvo += (Math.random() - 0.5) * (190 - DIF[dif].penCpu * 170);
   else alvo += (Math.random() - 0.5) * 26;
   const gk = pe.gk;
-  const acerta = Math.random() < (pe.atk === 1 ? 0.55 : DIF[dif].pen);
   const ladoBola = alvo < CX ? -1 : 1;
-  const lado = acerta ? ladoBola : -ladoBola;
+  let lado;
+  if (pe.atk === 1 && pe.disp && pe.escolha) lado = pe.escolha;   // canto escolhido pelo jogador
+  else lado = (Math.random() < (pe.atk === 1 ? 0.55 : DIF[dif].pen)) ? ladoBola : -ladoBola;
   gk.vx = lado * DIF[dif].gkVel * 1.4;
   gk.mergulho = 0.45; gk.sdx = lado; gk.sdy = 0;  // saltinho de barriga
   chutar(pe.taker, alvo, golY, 545, true);
@@ -1034,6 +1084,7 @@ function updatePlay(dt) {
     return;
   }
   if (M.half === 2 && M.tempo >= HALF_LEN * 2) { fimDePartida(); return; }
+  if (M.half === 3 && M.tempo >= HALF_LEN * 2 + 60) { fimDePartida(); return; }
   players = players.filter(p => !p.fora);   // expulsos saem de campo
   escolherCtrl();
   for (const p of players) {
@@ -1073,7 +1124,11 @@ function updateJogo(dt) {
       break;
     case 'intervalo':
       M.timer -= dt;
-      if (M.timer <= 0) { M.inv = true; posicionar(1); M.estado = 'play'; somApito(); }
+      if (M.timer <= 0) {
+        if (M.half === 2) { M.inv = true; posicionar(1); }
+        else posicionar(0);   // prorrogação
+        M.estado = 'play'; somApito();
+      }
       break;
     case 'abertura': updateAbertura(dt); break;
     case 'tatica': break;
@@ -1087,9 +1142,16 @@ function fimDePartida() {
   if (modo === 'amistoso') { tela = 'fimjogo'; return; }
   if (copa.fase === 'grupos') { registrarGrupo(ga, gb); tela = 'copa'; return; }
   if (ga === gb) {
+    if (!M.prorrog) {          // tempo de acréscimos do mata-mata
+      M.prorrog = true; M.half = 3;
+      M.estado = 'intervalo'; M.timer = 2.2;
+      anunciar('PRORROGAÇÃO! +1:00');
+      return;
+    }
     M.estado = 'disputa';
     M.disputa = { g: [0, 0], hist: [[], []], vez: 0, timer: 1.6, fim: false, venceu: -1 };
     anunciar('PÊNALTIS!');
+    somTorcida(0.15, 1.6, 850);
     return;
   }
   avancarMataMata(ga > gb);
@@ -1100,22 +1162,28 @@ function updateDisputa(dt) {
   D.timer -= dt;
   if (D.timer > 0) return;
   if (D.fim) { avancarMataMata(D.venceu === 0); return; }
-  const prob = D.vez === 0 ? 0.78 : DIF[dif].penCpu;
-  const converteu = Math.random() < prob;
+  iniciarPenalti(D.vez, true);   // próxima cobrança, valendo!
+}
+
+function resolveDisputa(converteu) {
+  const D = M.disputa;
   D.hist[D.vez].push(converteu);
-  if (converteu) { D.g[D.vez]++; somGol(); } else somTromba();
+  if (converteu) { D.g[D.vez]++; somGol(); somTorcida(0.2, 1.4, 1000); }
+  else { somTromba(); somTorcida(0.1, 0.8, 650); }
+  M.pen = null;
+  ball.vx = 0; ball.vy = 0; ball.z = 0; ball.vz = 0; ball.dono = null;
+  M.estado = 'disputa';
   D.vez = 1 - D.vez;
-  D.timer = 1.1;
+  D.timer = 1.6;
   const na = D.hist[0].length, nb = D.hist[1].length;
   if (na === nb && na >= 5 && D.g[0] !== D.g[1]) {
-    D.fim = true; D.venceu = D.g[0] > D.g[1] ? 0 : 1; D.timer = 2.4; somApito2();
+    D.fim = true; D.venceu = D.g[0] > D.g[1] ? 0 : 1; D.timer = 2.6; somApito2();
     return;
   }
-  // matematicamente decidido nas 5 primeiras
   if (na <= 5 && nb <= 5) {
     const restA = 5 - na, restB = 5 - nb;
     if (D.g[0] > D.g[1] + restB || D.g[1] > D.g[0] + restA) {
-      D.fim = true; D.venceu = D.g[0] > D.g[1] ? 0 : 1; D.timer = 2.4; somApito2();
+      D.fim = true; D.venceu = D.g[0] > D.g[1] ? 0 : 1; D.timer = 2.6; somApito2();
     }
   }
 }
@@ -1141,7 +1209,9 @@ function registrarGrupo(ga, gb) {
   const adv = advDaRodada();
   atualizaTab(selUser, adv, ga, gb);
   const outros = copa.grupo.slice(1).filter(t => t !== adv);
-  atualizaTab(outros[0], outros[1], Math.floor(Math.random() * 4), Math.floor(Math.random() * 4));
+  const s1 = Math.floor(Math.random() * 2 + Math.random() * forcaDe(outros[0]) / 2.2);
+  const s2 = Math.floor(Math.random() * 2 + Math.random() * forcaDe(outros[1]) / 2.2);
+  atualizaTab(outros[0], outros[1], s1, s2);
   copa.rodada++;
   if (copa.rodada >= 3) {
     const ordem = copa.grupo.slice().sort((a, b) => {
@@ -1596,10 +1666,10 @@ function drawHUD() {
   ctx.textAlign = 'left'; ctx.fillStyle = '#8ecae6'; ctx.fillText(B.s, W / 2 + 48, 36);
   ctx.textAlign = 'center'; ctx.fillStyle = '#fff'; ctx.font = 'bold 24px "Segoe UI",Arial';
   ctx.fillText(M.placar[0] + ' x ' + M.placar[1], W / 2, 38);
-  const tt = M.half === 1 ? M.tempo : M.tempo - HALF_LEN;
+  const tt = M.half === 1 ? M.tempo : M.half === 2 ? M.tempo - HALF_LEN : M.tempo - HALF_LEN * 2;
   const mm = Math.floor(tt / 60), ss = Math.floor(tt % 60);
   ctx.font = '13px "Segoe UI",Arial'; ctx.fillStyle = '#ddd';
-  let etiqueta = M.half + 'T ' + mm + ':' + String(ss).padStart(2, '0');
+  let etiqueta = (M.half === 3 ? 'PRORROG. ' : M.half + 'T ') + mm + ':' + String(ss).padStart(2, '0');
   if (modo === 'copa') etiqueta += ' · ' + FASES[copa.fase];
   ctx.fillText(etiqueta, W / 2, 56);
   // fôlego
@@ -1666,9 +1736,13 @@ function drawHUD() {
       ctx.fillText(usaToque ? 'CHUTE cruza · PASSE toca' : 'ESPAÇO cruza · X passa', W / 2, H - 46);
   }
   if (M.estado === 'gol' && (M.autor || M.golContra)) drawTelao();
-  if (M.estado === 'penalti' && M.pen && M.pen.fase === 'prep' && M.pen.atk === 0) {
+  if (M.estado === 'penalti' && M.pen && M.pen.fase === 'prep') {
     ctx.font = 'bold 15px "Segoe UI",Arial'; ctx.textAlign = 'center'; ctx.fillStyle = '#fff';
-    ctx.fillText(usaToque ? 'arraste p/ mirar · CHUTE bate' : '◀ ▶ mira · ESPAÇO bate', W / 2, H - 46);
+    if (M.pen.atk === 0)
+      ctx.fillText(usaToque ? 'arraste p/ mirar · CHUTE bate' : '◀ ▶ mira · ESPAÇO bate', W / 2, H - 46);
+    else if (M.pen.disp)
+      ctx.fillText((usaToque ? 'arraste' : '◀ ▶') + ' para escolher o canto do goleiro!' +
+        (M.pen.escolha ? (M.pen.escolha < 0 ? ' [ESQUERDA]' : ' [DIREITA]') : ''), W / 2, H - 46);
   }
   if (M.estado === 'disputa') drawDisputa();
 }
@@ -2040,6 +2114,7 @@ function tocarHino(sigla) {
   pararHino();
   audioInit();
   if (!actx) return;
+  somTorcida(0.05, 3.5, 550);   // murmúrio da arquibancada
   const seq = HINOS[sigla] || HINOS.GEN;
   let t = 250;
   for (const nd of seq.split(',')) {
@@ -2215,7 +2290,7 @@ function drawTatica() {
   ctx.textAlign = 'center';
   ctx.fillStyle = '#ffd166';
   ctx.font = 'bold 26px "Segoe UI",Arial';
-  ctx.fillText('⏸ TÁTICA', W / 2, 46);
+  ctx.fillText('⏸ PAUSA / TÁTICA', W / 2, 46);
   ctx.font = 'bold 15px "Segoe UI",Arial'; ctx.fillStyle = '#fff';
   ctx.fillText('Formação:', W / 2, 82);
   Object.keys(FORMS).forEach((f, i) => {
@@ -2249,9 +2324,21 @@ function drawTatica() {
     } });
   });
   ctx.textAlign = 'center';
-  botao(W / 2 - 110, H - 150, 220, 52, '▶ CONTINUAR', () => toggleTatica(), '#e07b00');
+  botao(W / 2 - 130, H - 168, 260, 52, '▶ CONTINUAR', () => toggleTatica(), '#e07b00');
+  botao(W / 2 - 130, H - 104, 260, 44, '🚪 ABANDONAR PARTIDA', abandonarPartida, '#8a1f1f', 'bold 15px Arial');
   ctx.font = '12px "Segoe UI",Arial'; ctx.fillStyle = 'rgba(255,255,255,0.6)';
-  ctx.fillText('Escolha um titular e depois o reserva que entra no lugar', W / 2, H - 74);
+  ctx.fillText('Escolha um titular e depois o reserva que entra no lugar', W / 2, H - 44);
+}
+
+function abandonarPartida() {
+  pararHino();
+  if (modo === 'copa' && copa && !copa.fim) {
+    if (copa.fase === 'grupos') registrarGrupo(0, 2);   // W.O.: derrota
+    else { avancarMataMata(false); }
+    M = null; tela = 'copa';
+  } else {
+    M = null; tela = 'menu';
+  }
 }
 
 // ================== Trajetória da falta e telão do gol ==================
