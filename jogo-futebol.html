@@ -188,7 +188,7 @@ function novoJog(side, k, info) {
     x: h.x, y: h.y, vx: 0, vy: 0, fase: Math.random() * 10, wobble: 0, stamina: 1, correndo: false,
     chuteCd: 0, holdT: 0, ruidoT: 0, rx: 0, ry: 0,
     slide: 0, sdx: 0, sdy: 0, levant: 0, desarme: 0, amarelos: 0, fora: false,
-    pulo: 0, bike: 0, mergulho: 0, arremesso: false, comendo: 0 };
+    pulo: 0, bike: 0, mergulho: 0, mergulhoCd: 0, arremesso: false, comendo: 0 };
 }
 
 function iniciarPartida(iA, iB) {
@@ -552,14 +552,17 @@ function aiGoleiro(p, dt) {
   const distGol = Math.abs(ball.y - golDefY(p.side));
   const vBola = Math.hypot(ball.vx, ball.vy);
   let tx, ty, vel;
-  if (vindo && distGol < 430 && vBola > 240) {
-    const t = Math.abs((linhaY - ball.y) / (ball.vy || 1));
-    tx = clamp(ball.x + ball.vx * t, GX0 + 8, GX1 - 8);
+  // a bola cruzaria a linha dentro do gol? (senão, nada de mergulho à toa)
+  const tAr = Math.abs((linhaY - ball.y) / (ball.vy || 1));
+  const ix = ball.x + ball.vx * tAr;
+  const rumoAoGol = vindo && vBola > 240 && tAr < 1.1 && ix > GX0 - 24 && ix < GX1 + 24;
+  if (rumoAoGol && distGol < 430) {
+    tx = clamp(ix, GX0 + 8, GX1 - 8);
     ty = linhaY;
     vel = DIF[dif].gkVel;
     // desvio lateral grande: SALTA de mão esticada!
-    if (Math.abs(tx - p.x) > 34 && p.levant <= 0) {
-      p.mergulho = 0.5;
+    if (Math.abs(tx - p.x) > 34 && p.levant <= 0 && p.mergulhoCd <= 0) {
+      p.mergulho = 0.5; p.mergulhoCd = 1.4;
       p.sdx = Math.sign(tx - p.x); p.sdy = 0;
       p.vx = p.sdx * DIF[dif].gkVel * 1.5; p.vy = 0;
       return;
@@ -588,6 +591,7 @@ function fisicaJogador(p, dt) {
     p.levant -= dt;
     p.vx *= 0.85; p.vy *= 0.85;
   }
+  p.mergulhoCd = Math.max(0, (p.mergulhoCd || 0) - dt);
   if (p.mergulho > 0) {        // voo lateral do goleiro
     p.mergulho -= dt;
     p.vx = p.sdx * DIF[dif].gkVel * 1.5;
@@ -811,8 +815,9 @@ function pararJogo(tipo, side, x, y, jaAnunciado) {
   M.parada = { tipo, side, taker, timer: 0 };
   taker.arremesso = tipo === 'lateral';
   if (tipo === 'falta') {
+    // falta ensaiada com barreira: só pertinho da área
     const distGol = Math.hypot(CX - ball.x, golAtkY(side) - ball.y);
-    if (distGol < 430) {
+    if (distGol < 300) {
       M.parada.ensaiada = true;
       M.parada.mira = CX;
       M.parada.loft = 190;
@@ -835,8 +840,8 @@ function updateParada(dt) {
     pa.barreira.forEach((o, i) => {
       if (o.fora) return;
       const off = (i - (pa.barreira.length - 1) / 2) * (R * 2 + 2);
-      o.x += (bx + px2 * off - o.x) * Math.min(1, 6 * dt);
-      o.y += (by + py2 * off - o.y) * Math.min(1, 6 * dt);
+      o.x += (clamp(bx + px2 * off, FX0 + R, FX1 - R) - o.x) * Math.min(1, 6 * dt);
+      o.y += (clamp(by + py2 * off, FY0 + R, FY1 - R) - o.y) * Math.min(1, 6 * dt);
       o.vx = 0; o.vy = 0;
       o.fase += 8 * dt;
       o.wobble = Math.max(o.wobble, 0.3 + 0.2 * Math.sin(clock * 9 + i)); // nervosos
