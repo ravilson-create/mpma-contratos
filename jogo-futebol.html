@@ -234,6 +234,7 @@ let formEscolhida = '4-3-2';
 let selUser = 0, selAdv = 1;
 let kitUser = 0, jogoPend = null;
 let escolhendo = 'user';
+let amistosoCat = 0;   // 0=seleções, 1=Brasileirão, 2=Champions (só no amistoso)
 let copa = null;
 let champions = null;
 let M = null;
@@ -2062,7 +2063,7 @@ function drawMenu() {
   DIF.forEach((d, i) => {
     botao(60 + i * 145, 390, 130, 46, d.nome, () => { dif = i; }, i === dif ? '#e07b00' : '#2a6f4e');
   });
-  botao(90, 460, 360, 54, '🤝 AMISTOSO', () => { modo = 'amistoso'; escolhendo = 'user'; tela = 'selecao'; });
+  botao(90, 460, 360, 54, '🤝 AMISTOSO', () => { modo = 'amistoso'; escolhendo = 'user'; amistosoCat = 0; tela = 'selecao'; });
   botao(90, 522, 360, 54, '🏆 COPA DO MUNDO 2026', () => { modo = 'copa'; escolhendo = 'user'; tela = 'selecao'; });
   botao(90, 584, 360, 54, '🇧🇷 BRASILEIRÃO 2026', () => { modo = 'brasileirao'; escolhendo = 'user'; tela = 'selecao'; });
   botao(90, 646, 360, 54, '⭐ LIGA DOS CAMPEÕES', () => { modo = 'champions'; escolhendo = 'user'; tela = 'selecao'; });
@@ -2073,6 +2074,11 @@ function drawMenu() {
 }
 
 function faixaTimes() {   // [ini, fim) de índices conforme o modo
+  if (modo === 'amistoso') {
+    if (amistosoCat === 1) return [N_COPA, N_EURO0];
+    if (amistosoCat === 2) return [N_EURO0, N_EURO1];
+    return [0, N_COPA];
+  }
   if (modo === 'brasileirao') return [N_COPA, N_EURO0];
   if (modo === 'champions') return [N_EURO0, N_EURO1];
   return [0, N_COPA];
@@ -2081,13 +2087,26 @@ function faixaTimes() {   // [ini, fim) de índices conforme o modo
 function drawSelecao() {
   fundoMenu();
   ctx.textAlign = 'center';
-  ctx.font = 'bold 22px "Segoe UI",Arial'; ctx.fillStyle = '#ffd166';
-  const titulo = (modo === 'brasileirao' || modo === 'champions')
+  ctx.font = 'bold 20px "Segoe UI",Arial'; ctx.fillStyle = '#ffd166';
+  const clubeLike = modo === 'brasileirao' || modo === 'champions' || (modo === 'amistoso' && amistosoCat > 0);
+  const titulo = clubeLike
     ? (escolhendo === 'user' ? 'Escolha o seu clube' : 'Escolha o adversário')
     : (escolhendo === 'user' ? 'Escolha a sua seleção' : 'Escolha o adversário');
-  ctx.fillText(titulo, W / 2, 40);
+  ctx.fillText(titulo, W / 2, 28);
+
+  let y0 = 58;
+  if (modo === 'amistoso') {
+    const cats = [['🌍 Seleções', 0], ['🇧🇷 Brasileirão', 1], ['⭐ Champions', 2]];
+    const cw2 = 176, gap = 6, totalW = cw2 * 3 + gap * 2, x0c = W / 2 - totalW / 2;
+    cats.forEach(([label, idx]) => {
+      botao(x0c + idx * (cw2 + gap), 40, cw2, 36, label, () => { amistosoCat = idx; },
+        amistosoCat === idx ? '#e07b00' : '#2a6f4e', 'bold 12px Arial');
+    });
+    y0 = 88;
+  }
+
   const [ini, fim] = faixaTimes();
-  const x0 = 10, y0 = 58, cw = 128, ch = 56;
+  const x0 = 10, cw = 128, ch = 56;
   for (let i = ini; i < fim; i++) {
     const sel = SELECOES[i];
     const k = i - ini, col = k % 4, lin = Math.floor(k / 4);
