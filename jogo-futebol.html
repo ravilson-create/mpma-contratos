@@ -2933,7 +2933,7 @@ function gerarTabela(times) {
 
 function iniciarLiga() {
   const times = [];
-  for (let i = N_COPA; i < SELECOES.length; i++) times.push(i);
+  for (let i = N_COPA; i < N_EURO0; i++) times.push(i);
   const tab = {};
   for (const c of times) tab[c] = { pts: 0, j: 0, v: 0, e: 0, d: 0, gp: 0, gc: 0 };
   liga = { times, tab, fixtures: gerarTabela(times), rodada: 0, fim: null };
