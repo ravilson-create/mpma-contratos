@@ -528,9 +528,22 @@ function aiLinha(p, dt) {
       iniciarCarrinho(p, ball.x - p.x, ball.y - p.y);
       return;
     }
-    const gdx = CX - ball.x, gdy = golY - ball.y, gl = Math.hypot(gdx, gdy) || 1;
-    tx = ball.x - gdx / gl * 6 + p.rx * 0.25;
-    ty = ball.y - gdy / gl * 6;
+    const comBola = ball.dono === p || (db < R + BR + 12 && ball.lastSide === p.side);
+    if (comBola) {
+      // com a bola no pé: conduz SEMPRE rumo ao gol de ataque (com ginga)
+      const distMeuGol = Math.abs(golDefY(p.side) - p.y);
+      if (distMeuGol < 140 && p.chuteCd <= 0) {   // encurralado: chutão de alívio
+        chutar(p, FX0 + 60 + Math.random() * (FWID - 120), p.y + dirDe(p.side) * 320, 520, true, 160);
+        return;
+      }
+      tx = clamp(p.x + (CX - p.x) * 0.25 + p.rx, FX0 + R, FX1 - R);
+      ty = golY;
+    } else {
+      // bola solta: posiciona-se atrás dela em relação ao gol
+      const gdx = CX - ball.x, gdy = golY - ball.y, gl = Math.hypot(gdx, gdy) || 1;
+      tx = ball.x - gdx / gl * 6 + p.rx * 0.25;
+      ty = ball.y - gdy / gl * 6;
+    }
     // cabeceio/bicicleta da IA em bola alta
     if (ball.z > 14 && ball.z < 62 && db < 44 && p.chuteCd <= 0) {
       acaoAerea(p, ball.x - p.x, ball.y - p.y);
