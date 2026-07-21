@@ -134,6 +134,7 @@ function Login() {
 // ─── SIDEBAR ─────────────────────────────────────────────────
 function Sidebar({ pagina, setPagina, qtdAlertas, area, mudarArea }) {
   const { user, logout } = useAuth()
+  const [modalRelatorio, setModalRelatorio] = useState(false)
   const itens = [
     { id: 'dashboard', label: 'Dashboard' },
     { id: 'contratos', label: 'Contratos' },
@@ -165,7 +166,7 @@ function Sidebar({ pagina, setPagina, qtdAlertas, area, mudarArea }) {
         ))}
       </nav>
       <div style={{ padding: '.5rem 1rem 0' }}>
-        <button className='nav-item' style={{width:'100%'}} onClick={() => gerarRelatorio(area)}>📄 Gerar Relatório</button>
+        <button className='nav-item' style={{width:'100%'}} onClick={() => setModalRelatorio(true)}>📄 Gerar Relatório</button>
       </div>
       <div style={{ padding: '1rem', borderTop: '1px solid var(--border)' }}>
         <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 8 }}>
@@ -174,11 +175,61 @@ function Sidebar({ pagina, setPagina, qtdAlertas, area, mudarArea }) {
         </div>
         <button className="btn" style={{ width: '100%', fontSize: 12 }} onClick={logout}>Sair</button>
       </div>
+      {modalRelatorio && <ModalRelatorio area={area} onClose={() => setModalRelatorio(false)} />}
     </aside>
   )
 }
 
-// ─── MODAL CONTRATO ──────────────────────────────────────────
+// ─── MODAL RELATÓRIO ─────────────────────────────────────────
+function ModalRelatorio({ area, onClose }) {
+  const [contratos, setContratos] = useState([])
+  const [contratoId, setContratoId] = useState('')
+  const [dataInicio, setDataInicio] = useState('')
+  const [dataFim, setDataFim] = useState('')
+  const [gerando, setGerando] = useState(false)
+
+  useEffect(() => {
+    supabase.from('contratos').select('id,numero,empresa').eq('area', area).order('numero').then(({ data }) => setContratos(data || []))
+  }, [area])
+
+  async function handleGerar() {
+    setGerando(true)
+    await gerarRelatorio(area, { contratoId: contratoId || null, dataInicio: dataInicio || null, dataFim: dataFim || null })
+    setGerando(false)
+    onClose()
+  }
+
+  return (
+    <div className="modal-bg" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal" style={{ maxWidth: 460 }}>
+        <div className="modal-header">
+          <h2>Gerar relatório</h2>
+          <button className="btn" onClick={onClose}>✕</button>
+        </div>
+        <div className="field" style={{ marginBottom: 12 }}>
+          <label>Contrato</label>
+          <select value={contratoId} onChange={e => setContratoId(e.target.value)}>
+            <option value="">Todos os contratos da área</option>
+            {contratos.map(c => <option key={c.id} value={c.id}>{c.numero} — {c.empresa}</option>)}
+          </select>
+        </div>
+        <div className="form-grid">
+          <div className="field"><label>Data início</label><input type="date" value={dataInicio} onChange={e => setDataInicio(e.target.value)} /></div>
+          <div className="field"><label>Data fim</label><input type="date" value={dataFim} onChange={e => setDataFim(e.target.value)} /></div>
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 10 }}>
+          Deixe as datas em branco para incluir todo o histórico. Empenhos, medições e aditivos serão filtrados pelo período escolhido — o relatório sempre mostra também a quebra por período de vigência do contrato (renovações), independente do filtro de datas.
+        </div>
+        <div className="btn-row">
+          <button className="btn" onClick={onClose}>Cancelar</button>
+          <button className="btn primary" onClick={handleGerar} disabled={gerando}>{gerando ? 'Gerando...' : 'Gerar relatório'}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+
 function ModalContrato({ contrato, onClose, onSalvo, areaAtual }) {
   const vazio = { numero: '', empresa: '', sei_contrato: '', sei_pagamentos: '', local_unidade: '', objeto: '', gestor_nome: '', fiscal_nome: '', data_vencimento: '', valor_anual: '', valor_mensal_previsto: '', loa_2026: '', observacoes: '', area: areaAtual || 'manutencao' }
   const [f, setF] = useState(contrato ? { ...vazio, ...contrato, valor_anual: contrato.valor_anual || '', valor_mensal_previsto: contrato.valor_mensal_previsto || '', loa_2026: contrato.loa_2026 || '' } : vazio)
@@ -1406,8 +1457,20 @@ function Previsao({ onVerContrato, area }) {
 // ─── APP SHELL ───────────────────────────────────────────────
 
 // ─── RELATÓRIO ───────────────────────────────────────────────
-async function gerarRelatorio(area) {
-  const { data: cs } = await supabase.from('contratos').select('*').eq('area', area||'manutencao').order('numero')
+function dentroDoIntervalo(dataStr, ini, fim) {
+  if (!dataStr) return !ini && !fim
+  const d = new Date(dataStr+'T00:00:00')
+  if (ini && d < new Date(ini+'T00:00:00')) return false
+  if (fim && d > new Date(fim+'T00:00:00')) return false
+  return true
+}
+
+async function gerarRelatorio(area, opts) {
+  opts = opts || {}
+  const { contratoId, dataInicio, dataFim } = opts
+  let query = supabase.from('contratos').select('*').order('numero')
+  query = contratoId ? query.eq('id', contratoId) : query.eq('area', area||'manutencao')
+  const { data: cs } = await query
   const { data: es } = await supabase.from('empenhos').select('*').order('data_empenho')
   const { data: ms } = await supabase.from('medicoes').select('*').order('data_medicao').order('criado_em')
   const { data: adsr } = await supabase.from('aditivos').select('*').order('data_assinatura')
@@ -1421,12 +1484,22 @@ async function gerarRelatorio(area) {
     const adisC=(adsr||[]).filter(a=>a.contrato_id===c.id)
     const medicoesC=(ms||[]).filter(m=>m.contrato_id===c.id)
     const previsoesC=(psr||[]).filter(p=>p.contrato_id===c.id)
+    const empenhosC=(es||[]).filter(e=>e.contrato_id===c.id)
     const totalPrevistoC=previsoesC.filter(p=>p.status==='planejado'||p.status==='em_execucao').reduce((s,p)=>s+Number(p.valor_previsto||0),0)
     const situacaoC = calcularSituacaoPeriodos(c, adisC, medicoesC)
     let vigVigR=c.data_vencimento; adisC.filter(a=>(a.tipo==='prazo'||a.tipo==='prazo_valor')&&a.nova_vigencia).sort((a,b)=>new Date(a.data_assinatura)-new Date(b.data_assinatura)).forEach(a=>{vigVigR=a.nova_vigencia})
-    const totalEmpC=(es||[]).filter(e=>e.contrato_id===c.id).reduce((a,e)=>a+Number(e.valor),0)
+    const totalEmpC=empenhosC.reduce((a,e)=>a+Number(e.valor),0)
     const totalMedC=medicoesC.reduce((a,m)=>a+Number(m.valor),0)
-    return { ...c, empenhos:(es||[]).filter(e=>e.contrato_id===c.id), medicoes:medicoesC, aditivos:adisC, previsoes:previsoesC, totalPrevisto:totalPrevistoC, totalEmp:totalEmpC, totalMed:totalMedC, valorAnualVigente:situacaoC.valorPeriodoAtual, medidoPeriodoAtual:situacaoC.medidoPeriodoAtual, vigenciaVigente:vigVigR, saldoProjetadoEmpenho:(totalEmpC-totalMedC)-totalPrevistoC }
+    // Listas filtradas pelo intervalo de datas escolhido (apenas para exibição nas tabelas)
+    const empenhosFiltrados = (dataInicio||dataFim) ? empenhosC.filter(e=>dentroDoIntervalo(e.data_empenho,dataInicio,dataFim)) : empenhosC
+    const medicoesFiltradas = (dataInicio||dataFim) ? medicoesC.filter(m=>dentroDoIntervalo(m.data_medicao||(m.mes_referencia?m.mes_referencia+'-01':null),dataInicio,dataFim)) : medicoesC
+    const aditivosFiltrados = (dataInicio||dataFim) ? adisC.filter(a=>dentroDoIntervalo(a.data_assinatura,dataInicio,dataFim)) : adisC
+    return { ...c, empenhos:empenhosC, medicoes:medicoesC, aditivos:adisC, previsoes:previsoesC,
+      empenhosFiltrados, medicoesFiltradas, aditivosFiltrados,
+      totalPrevisto:totalPrevistoC, totalEmp:totalEmpC, totalMed:totalMedC,
+      valorAnualVigente:situacaoC.valorPeriodoAtual, medidoPeriodoAtual:situacaoC.medidoPeriodoAtual,
+      vigenciaVigente:vigVigR, saldoProjetadoEmpenho:(totalEmpC-totalMedC)-totalPrevistoC,
+      periodos:situacaoC.periodos, valoresPeriodos:situacaoC.valores, medidosPeriodos:situacaoC.medidos, idxAtualPeriodo:situacaoC.idxAtual }
   })
 
   // Gerar alertas
@@ -1512,6 +1585,8 @@ async function gerarRelatorio(area) {
 
   <h1>Ministerio Publico do Maranhao — MPMA</h1>
   <div class="subtitulo">Relatorio de Contratos — ${area==='fiscalizacao'?'Fiscalizacao de Obras':'Manutencao Predial'}</div>
+  <div class="subtitulo">${contratoId?'Contrato: '+(contratos[0]?contratos[0].numero+' — '+contratos[0].empresa:''):'Todos os contratos da area ('+contratos.length+')'}</div>
+  <div class="subtitulo">Periodo do relatorio: ${(dataInicio||dataFim)?(fmtD(dataInicio)+' ate '+fmtD(dataFim)):'Todo o historico'}</div>
   <div class="data-rel">Emitido em: ${hoje} &nbsp;|&nbsp; Total de contratos: ${contratos.length}</div>
 
   <h2>Resumo Financeiro Consolidado</h2>
@@ -1544,7 +1619,7 @@ async function gerarRelatorio(area) {
     const anual=Number(c.valorAnualVigente||0); const loa=Number(c.loa_2026||0)
     const salCor=sal<0?'vermelho':sal<Number(c.valor_mensal_previsto||0)?'amarelo':'verde'
     let saldoAcum=c.totalEmp
-    const medsComSaldo=c.medicoes.map(m=>{ saldoAcum-=Number(m.valor); return {...m,saldoApos:saldoAcum} })
+    const medsComSaldo=c.medicoesFiltradas.map(m=>{ saldoAcum-=Number(m.valor); return {...m,saldoApos:saldoAcum} })
     return `
     <div class="bloco-contrato">
       <div class="contrato-header">
@@ -1569,17 +1644,29 @@ async function gerarRelatorio(area) {
         ${anual>0?`<div class="fin-item"><div class="lbl">Saldo do periodo</div><div class="val ${(anual-c.medidoPeriodoAtual)<0?'vermelho':'verde'}">${fmtR(anual-c.medidoPeriodoAtual)}</div></div>`:''}
         ${loa>0?`<div class="fin-item"><div class="lbl">Saldo LOA 2026</div><div class="val ${(loa-c.totalEmp)<0?'vermelho':'verde'}">${fmtR(loa-c.totalEmp)}</div></div>`:''}
       </div>
-      ${c.empenhos.length>0?`
-      <h3>Empenhos</h3>
+      ${c.periodos&&c.periodos.length>0?`
+      <h3>Periodos de Vigencia do Contrato</h3>
+      <table>
+        <thead><tr><th>Periodo</th><th>De</th><th>Ate</th><th class="tr">Valor do periodo</th><th class="tr">Medido</th><th class="tr">Saldo</th></tr></thead>
+        <tbody>
+          ${c.periodos.map((p,i)=>{
+            const val=c.valoresPeriodos[i]; const med=c.medidosPeriodos[i]; const sp=val-med
+            const atual=i===c.idxAtualPeriodo
+            return `<tr style="${atual?'background:#e6f1fb;font-weight:700':''}"><td>${i+1}o ${atual?'(vigente)':''}</td><td>${p.inicio?fmtD(p.inicio):'Inicio do contrato'}</td><td>${p.fim?fmtD(p.fim):'—'}</td><td class="tr">${fmtR(val)}</td><td class="tr">${fmtR(med)}</td><td class="tr ${sp<0?'vermelho':'verde'}">${fmtR(sp)}</td></tr>`
+          }).join('')}
+        </tbody>
+      </table>`:''}
+      ${c.empenhosFiltrados.length>0?`
+      <h3>Empenhos${(dataInicio||dataFim)?' (no periodo selecionado)':''}</h3>
       <table>
         <thead><tr><th>No empenho</th><th>Data</th><th class="tr">Valor</th><th>Descricao</th></tr></thead>
         <tbody>
-          ${c.empenhos.map(e=>`<tr><td style="font-family:monospace">${e.numero}</td><td>${fmtD(e.data_empenho)}</td><td class="tr">${fmtR(e.valor)}</td><td>${e.descricao||'—'}</td></tr>`).join('')}
-          <tr style="font-weight:700;background:#e8f0fb"><td colspan="2">Total empenhado</td><td class="tr">${fmtR(c.totalEmp)}</td><td></td></tr>
+          ${c.empenhosFiltrados.map(e=>`<tr><td style="font-family:monospace">${e.numero}</td><td>${fmtD(e.data_empenho)}</td><td class="tr">${fmtR(e.valor)}</td><td>${e.descricao||'—'}</td></tr>`).join('')}
+          <tr style="font-weight:700;background:#e8f0fb"><td colspan="2">Total ${(dataInicio||dataFim)?'no periodo':'empenhado'}</td><td class="tr">${fmtR(c.empenhosFiltrados.reduce((a,e)=>a+Number(e.valor),0))}</td><td></td></tr>
         </tbody>
-      </table>`:'<div style="font-size:10px;color:#999;margin:4px 0">Nenhum empenho registrado.</div>'}
+      </table>`:'<div style="font-size:10px;color:#999;margin:4px 0">Nenhum empenho registrado no periodo.</div>'}
       ${medsComSaldo.length>0?`
-      <h3>Medicoes realizadas</h3>
+      <h3>Medicoes realizadas${(dataInicio||dataFim)?' (no periodo selecionado)':''}</h3>
       <table>
         <thead><tr><th>No</th><th>Mes ref.</th><th>Data</th><th class="tr">Valor medido</th><th class="tr">Saldo apos</th><th>Status</th></tr></thead>
         <tbody>
@@ -1587,15 +1674,15 @@ async function gerarRelatorio(area) {
             const sc=m.saldoApos<0?'vermelho':m.saldoApos<Number(c.valor_mensal_previsto||0)?'amarelo':'verde'
             return `<tr><td>${m.numero}</td><td>${m.mes_referencia?m.mes_referencia.replace('-','/'):'—'}</td><td>${fmtD(m.data_medicao)}</td><td class="tr">${fmtR(m.valor)}</td><td class="tr ${sc}">${fmtR(m.saldoApos)}</td><td>${m.status}</td></tr>`
           }).join('')}
-          <tr style="font-weight:700;background:#e8f0fb"><td colspan="3">Total medido</td><td class="tr">${fmtR(c.totalMed)}</td><td class="tr ${salCor}">${fmtR(sal)}</td><td></td></tr>
+          <tr style="font-weight:700;background:#e8f0fb"><td colspan="3">Total medido ${(dataInicio||dataFim)?'no periodo':''}</td><td class="tr">${fmtR(medsComSaldo.reduce((a,m)=>a+Number(m.valor),0))}</td><td class="tr ${salCor}">${fmtR(sal)}</td><td></td></tr>
         </tbody>
-      </table>`:'<div style="font-size:10px;color:#999;margin:4px 0">Nenhuma medicao registrada.</div>'}
-      ${c.aditivos&&c.aditivos.length>0?`
-      <h3>Aditivos</h3>
+      </table>`:'<div style="font-size:10px;color:#999;margin:4px 0">Nenhuma medicao registrada no periodo.</div>'}
+      ${c.aditivosFiltrados&&c.aditivosFiltrados.length>0?`
+      <h3>Aditivos${(dataInicio||dataFim)?' (no periodo selecionado)':''}</h3>
       <table>
         <thead><tr><th>No</th><th>Data</th><th>Tipo</th><th class="tr">Valor acrescido</th><th>Nova vigencia</th><th>Reajuste</th></tr></thead>
         <tbody>
-          ${c.aditivos.map(a=>`<tr><td>${a.numero}</td><td>${fmtD(a.data_assinatura)}</td><td>${a.tipo==='prazo'?'Prazo':a.tipo==='valor'?'Valor':a.tipo==='reajuste'?'Reajuste':'Prazo+Valor'}</td><td class="tr">${Number(a.valor_acrescido)>0?fmtR(a.valor_acrescido):'—'}</td><td>${a.nova_vigencia?fmtD(a.nova_vigencia):'—'}</td><td>${a.indice_reajuste&&Number(a.percentual_reajuste)>0?a.indice_reajuste+' '+Number(a.percentual_reajuste).toFixed(2)+'%':'—'}</td></tr>`).join('')}
+          ${c.aditivosFiltrados.map(a=>`<tr><td>${a.numero}</td><td>${fmtD(a.data_assinatura)}</td><td>${a.tipo==='prazo'?'Prazo':a.tipo==='valor'?'Valor':a.tipo==='reajuste'?'Reajuste':'Prazo+Valor'}</td><td class="tr">${Number(a.valor_acrescido)>0?fmtR(a.valor_acrescido):'—'}</td><td>${a.nova_vigencia?fmtD(a.nova_vigencia):'—'}</td><td>${a.indice_reajuste&&Number(a.percentual_reajuste)>0?a.indice_reajuste+' '+Number(a.percentual_reajuste).toFixed(2)+'%':'—'}</td></tr>`).join('')}
         </tbody>
       </table>`:''}
       ${c.previsoes&&c.previsoes.filter(p=>p.status==='planejado'||p.status==='em_execucao').length>0?`
