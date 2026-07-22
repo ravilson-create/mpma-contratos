@@ -242,9 +242,10 @@ let players = [], ctrl = null;
 let arbitro = null;
 let offTrap = null, faltaCd = 0;
 let clock = 0, particulas = [], confetes = [], botoes = [];
+let replayBuf = [], replayTick = 0;
 const NUMS = [1, 2, 3, 4, 6, 5, 8, 10, 7, 9];
 
-const ball = { x: CX, y: CYW, vx: 0, vy: 0, z: 0, vz: 0, spin: 0, dono: null, lastSide: 0, lastP: null };
+const ball = { x: CX, y: CYW, vx: 0, vy: 0, z: 0, vz: 0, spin: 0, dono: null, lastSide: 0, lastP: null, autoGol: null, lastKicker: null };
 
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
@@ -303,7 +304,7 @@ function posicionar(saida) {
     p.x = h.x; p.y = h.y; p.vx = 0; p.vy = 0; p.chuteCd = 0.5;
   }
   ball.x = CX; ball.y = CYW; ball.vx = 0; ball.vy = 0; ball.spin = 0;
-  ball.dono = null; ball.lastSide = saida;
+  ball.dono = null; ball.lastSide = saida; ball.autoGol = null; ball.lastKicker = null;
   offTrap = null;
   // todo mundo no próprio campo na saída de bola
   for (const p of players) {
@@ -411,6 +412,9 @@ function chutar(p, tx, ty, poder, semImped, loft) {
   p.chuteCd = 0.4; p.wobble = 1;
   if (!semImped) armarImpedimento(p);
   somChute();
+  // gol contra só conta quando o chute/toque mira de propósito no próprio gol
+  ball.autoGol = (Math.abs(tx - CX) < GW / 2 + 25 && Math.abs(ty - golDefY(p.side)) < 45) ? p : null;
+  ball.lastKicker = p;   // quem chutou de fato (mesmo que a bola desvie depois)
   if (M.estado === 'parada') { M.estado = 'play'; M.parada = null; }
 }
 
@@ -420,6 +424,8 @@ function acaoAerea(p, mdx, mdy) {
   const gdx = CX - p.x, gdy = gy - p.y, gl = Math.hypot(gdx, gdy) || 1;
   const dot = (mdx || mdy) ? (mdx * gdx + mdy * gdy) / (Math.hypot(mdx, mdy) * gl) : 1;
   ball.dono = null;
+  ball.autoGol = null;   // cabeceio/bicicleta sempre mira o gol adversário
+  ball.lastKicker = p;
   if (tocou(p)) return;
   if (dot < -0.25) {           // BICICLETA!
     p.bike = 0.55; p.chuteCd = 1.1;
@@ -977,7 +983,16 @@ function pararJogo(tipo, side, x, y, jaAnunciado) {
       M.parada.barreira = players.filter(o => o.side !== side && !o.gk)
         .sort((x1, x2) => Math.hypot(x1.x - ball.x, x1.y - ball.y) - Math.hypot(x2.x - ball.x, x2.y - ball.y))
         .slice(0, 3);
+    } else {
+      M.parada.mira = CX;
+      M.parada.loft = 150;
     }
+  } else if (tipo === 'meta') {
+    M.parada.mira = CX;
+    M.parada.loft = 260;
+  } else if (tipo === 'lateral') {
+    M.parada.mira = clamp(ball.x + (ball.x < CX ? 110 : -110), FX0 + 20, FX1 - 20);
+    M.parada.loft = 90;
   }
 }
 
@@ -1054,6 +1069,34 @@ function updateParada(dt) {
     return;
   }
 
+  // lateral do usuário: mira livre antes de arremessar
+  if (pa.tipo === 'lateral' && pa.side === 0) {
+    if (keys['arrowleft'] || keys['a']) pa.mira -= 170 * dt;
+    if (keys['arrowright'] || keys['d']) pa.mira += 170 * dt;
+    if (keys['arrowup'] || keys['w']) pa.loft += 160 * dt;
+    if (keys['arrowdown'] || keys['s']) pa.loft -= 160 * dt;
+    if (joy.ativo) pa.mira = pa.px + clamp(joy.dx / 55, -1, 1) * 150;
+    pa.mira = clamp(pa.mira, FX0 + 20, FX1 - 20);
+    pa.loft = clamp(pa.loft, 0, 220);
+    if (acaoChute) chutar(t, pa.mira, pa.py + dirDe(pa.side) * 180, 380, semImped, pa.loft);
+    else if (acaoPasse) passar(t, semImped);
+    return;
+  }
+
+  // tiro de meta / falta simples do usuário: mira livre em X + altura
+  if (pa.side === 0 && (pa.tipo === 'meta' || pa.tipo === 'falta')) {
+    if (keys['arrowleft'] || keys['a']) pa.mira -= 200 * dt;
+    if (keys['arrowright'] || keys['d']) pa.mira += 200 * dt;
+    if (keys['arrowup'] || keys['w']) pa.loft += 180 * dt;
+    if (keys['arrowdown'] || keys['s']) pa.loft -= 180 * dt;
+    if (joy.ativo) pa.mira = CX + clamp(joy.dx / 55, -1, 1) * (FWID / 2 - 40);
+    pa.mira = clamp(pa.mira, FX0 + 30, FX1 - 30);
+    pa.loft = clamp(pa.loft, 60, 320);
+    if (acaoChute) chutar(t, pa.mira, gyA, pa.tipo === 'meta' ? 620 : 530, semImped, pa.loft);
+    else if (acaoPasse) passar(t, semImped);
+    return;
+  }
+
   if (pa.side === 1) {
     if (pa.timer > 1.1) {
       if (pa.tipo === 'meta') chutar(t, FX0 + 70 + Math.random() * (FWID - 140), CYW + dirDe(pa.side) * 100, 620, semImped, 280);
@@ -1061,13 +1104,12 @@ function updateParada(dt) {
       else aiPasse(t, semImped, pa.tipo === 'lateral' ? 130 : 0);
     }
   } else {
-    if (acaoChute) {
-      if (pa.tipo === 'escanteio' || pa.tipo === 'lateral') chutar(t, cruzX, cruzY, 430, semImped, 240);
-      else chutar(t, CX + (Math.random() - 0.5) * 80, gyA, 530, semImped, 110);
-    } else if (acaoPasse) {
+    // só sobra o escanteio do usuário aqui (lateral/meta/falta já retornaram acima)
+    if (acaoChute) chutar(t, cruzX, cruzY, 430, semImped, 240);
+    else if (acaoPasse) {
       const guarda = ctrl;
       passar(t, semImped);
-      if (M.estado === 'parada' && pa.timer > 0.4) aiPasse(t, semImped, pa.tipo === 'lateral' ? 110 : 0);
+      if (M.estado === 'parada' && pa.timer > 0.4) aiPasse(t, semImped, 0);
       ctrl = guarda;
     }
   }
@@ -1076,12 +1118,20 @@ function updateParada(dt) {
 function gol(side) {
   if (M.disputa && M.pen && M.pen.disp) { resolveDisputa(true); return; }
   M.placar[side]++;
-  const autor = ball.lastP && !ball.lastP.fora ? ball.lastP : null;
-  M.autor = autor && autor.side === side ? autor : null;
-  M.golContra = autor && autor.side !== side ? autor : null;
+  const tocouUltimo = ball.lastP && !ball.lastP.fora ? ball.lastP : null;
+  const chutouUltimo = ball.lastKicker && !ball.lastKicker.fora ? ball.lastKicker : null;
+  // gol contra só quando o próprio jogador/goleiro chutou ou cabeceou para o seu gol;
+  // um desvio/defesa mal-sucedida no goleiro NÃO conta como gol contra
+  M.golContra = ball.autoGol && !ball.autoGol.fora && ball.autoGol.side !== side ? ball.autoGol : null;
+  // autor do gol: quem tocou por último (se do time que marcou); senão, quem chutou
+  // por último (cobre o caso de a bola desviar no goleiro antes de entrar)
+  M.autor = M.golContra ? null :
+    (tocouUltimo && tocouUltimo.side === side ? tocouUltimo :
+     (chutouUltimo && chutouUltimo.side === side ? chutouUltimo : null));
   if (M.autor) M.autor.comendo = 3;
   M.fraseGol = M.golContra ? 'GOL CONTRA!' : FRASES_GOL[Math.floor(Math.random() * FRASES_GOL.length)];
   M.estado = 'gol'; M.golTimer = 3; M.saida = 1 - side; M.pen = null;
+  M.replay = replayBuf.slice(); M.replayIdx = 0; M.replayTimer = 0;
   somGol();
   somTorcida(0.28, 2.4, 1100);   // estádio explode
   explodirFesta(90);
@@ -1261,6 +1311,14 @@ function updateJogo(dt) {
         posicionar(M.saida); M.estado = 'play'; somApito();
       }
       break;
+    case 'replay':
+      if (acaoChute) { M.replayIdx = M.replay.length; }
+      else {
+        M.replayTimer += dt;
+        if (M.replayTimer > 0.06) { M.replayTimer = 0; M.replayIdx++; }
+      }
+      if (M.replayIdx >= M.replay.length) { posicionar(M.saida); M.estado = 'play'; somApito(); }
+      break;
     case 'intervalo':
       M.timer -= dt;
       if (M.timer <= 0) {
@@ -1409,10 +1467,27 @@ function atualizarParticulas(dt) {
   confetes = confetes.filter(c => c.vida > 0 && c.y < H + 30);
 }
 
+// grava um instantâneo leve do lance pra poder mostrar o replay do gol
+function gravarReplayFrame() {
+  replayBuf.push({
+    bx: ball.x, by: ball.y, bz: ball.z, bspin: ball.spin,
+    jogadores: players.map(p => ({
+      x: p.x, y: p.y, vx: p.vx, vy: p.vy, side: p.side, gk: p.gk, tom: p.tom, cab: p.cab,
+      num: p.num, nome: p.nome, fase: p.fase, wobble: p.wobble, slide: p.slide, levant: p.levant,
+      mergulho: p.mergulho, bike: p.bike, pulo: p.pulo, sdx: p.sdx, sdy: p.sdy,
+      arremesso: p.arremesso, stamina: p.stamina, amarelos: p.amarelos, comendo: p.comendo
+    }))
+  });
+  if (replayBuf.length > 110) replayBuf.shift();   // ~3.5s de lance
+}
+
 function update(dt) {
   clock += dt;
   if (tela === 'jogo' && M) updateJogo(dt);
   if (tela === 'jogo' && M) {
+    replayTick++;
+    if (replayTick % 2 === 0 && (M.estado === 'play' || M.estado === 'parada' || M.estado === 'penalti' || M.estado === 'hidratacao'))
+      gravarReplayFrame();
     const alvoC = camAlvo();
     if (!camS || M.estado === 'abertura') camS = alvoC;
     else {
@@ -1930,6 +2005,11 @@ function drawHUD() {
     ctx.strokeStyle = '#5a3a00'; ctx.fillStyle = '#ffd166';
     ctx.strokeText(M.fraseGol, 0, 0); ctx.fillText(M.fraseGol, 0, 0);
     ctx.restore();
+    if (M.replay && M.replay.length > 15) {
+      botao(W / 2 - 110, H - 150, 220, 50, '📺 VER REPLAY', () => {
+        M.estado = 'replay'; M.replayIdx = 0; M.replayTimer = 0;
+      }, '#2a6f4e');
+    }
   }
   if (M.estado === 'hidratacao') {
     ctx.save(); ctx.translate(W / 2, H * 0.35);
@@ -1948,6 +2028,8 @@ function drawHUD() {
     ctx.fillStyle = '#fff';
     if (M.parada.ensaiada)
       ctx.fillText(usaToque ? 'arraste p/ mirar · CHUTE cobra' : '◀ ▶ mira · ▲▼ altura · ESPAÇO cobra por cima da barreira', W / 2, H - 46);
+    else if (M.parada.tipo === 'lateral' || M.parada.tipo === 'meta' || M.parada.tipo === 'falta')
+      ctx.fillText(usaToque ? 'arraste p/ mirar · CHUTE lança' : '◀ ▶ mira · ▲▼ altura · ESPAÇO lança', W / 2, H - 46);
     else
       ctx.fillText(usaToque ? 'CHUTE cruza · PASSE toca' : 'ESPAÇO cruza · X passa', W / 2, H - 46);
   }
@@ -1996,7 +2078,42 @@ function drawDisputa() {
   }
 }
 
+function drawReplayFrame() {
+  const idx = Math.min(M.replayIdx, M.replay.length - 1);
+  const frame = M.replay[idx];
+  const prev = M.replay[Math.max(0, idx - 1)];
+  const dtRec = 2 / 60;
+  const realBall = { x: ball.x, y: ball.y, z: ball.z, spin: ball.spin, vx: ball.vx, vy: ball.vy };
+  const realPlayers = players, realCtrl = ctrl;
+  ball.x = frame.bx; ball.y = frame.by; ball.z = frame.bz; ball.spin = frame.bspin;
+  ball.vx = (frame.bx - prev.bx) / dtRec; ball.vy = (frame.by - prev.by) / dtRec;
+  players = frame.jogadores; ctrl = null;
+
+  const c = { x: clamp(ball.x, W / 2, WW - W / 2), y: clamp(ball.y, H / 2, WH - H / 2), s: 1 };
+  ctx.fillStyle = '#0a1f14'; ctx.fillRect(0, 0, W, H);
+  ctx.save();
+  ctx.translate(W / 2, H / 2); ctx.scale(c.s, c.s); ctx.translate(-c.x, -c.y);
+  drawCampo(); drawBancos();
+  const ordem = players.slice().sort((a, b) => a.y - b.y);
+  let bolaOk = false;
+  for (const p of ordem) { if (!bolaOk && ball.y < p.y) { drawBola(); bolaOk = true; } drawGordinho(p); }
+  if (!bolaOk) drawBola();
+  ctx.restore();
+
+  Object.assign(ball, realBall);
+  players = realPlayers; ctrl = realCtrl;
+
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 24px "Comic Sans MS","Segoe UI",Arial'; ctx.lineWidth = 5;
+  ctx.strokeStyle = '#5a3a00'; ctx.fillStyle = '#ffd166';
+  ctx.strokeText('📺 REPLAY DO GOL', W / 2, 42);
+  ctx.fillText('📺 REPLAY DO GOL', W / 2, 42);
+  ctx.font = '13px "Segoe UI",Arial'; ctx.fillStyle = 'rgba(255,255,255,0.8)';
+  ctx.fillText(usaToque ? 'toque para pular' : 'ESPAÇO para pular', W / 2, 66);
+}
+
 function drawJogo() {
+  if (M.estado === 'replay') { drawReplayFrame(); return; }
   const c = cam();
   ctx.fillStyle = '#0a1f14';
   ctx.fillRect(0, 0, W, H);
@@ -2007,6 +2124,17 @@ function drawJogo() {
   drawCampo();
   drawBancos();
   if (M.estado === 'parada' && M.parada && M.parada.ensaiada && M.parada.side === 0) drawTrajetoria();
+  if (M.estado === 'parada' && M.parada && M.parada.side === 0 && !M.parada.ensaiada &&
+      (M.parada.tipo === 'meta' || M.parada.tipo === 'falta' || M.parada.tipo === 'lateral')) {
+    const pa = M.parada;
+    const my = pa.tipo === 'lateral' ? pa.py + dirDe(0) * 180 : golAtkY(0);
+    ctx.strokeStyle = 'rgba(255,220,80,0.55)'; ctx.lineWidth = 2; ctx.setLineDash([8, 8]);
+    ctx.beginPath(); ctx.moveTo(pa.px, pa.py); ctx.lineTo(pa.mira, my); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(255,220,80,0.9)';
+    ctx.beginPath(); ctx.arc(pa.mira, my, 7, 0, 6.29); ctx.fill();
+    ctx.strokeStyle = '#5a3a00'; ctx.lineWidth = 2; ctx.stroke();
+  }
   if (M.estado === 'penalti' && M.pen && M.pen.fase === 'prep') {
     ctx.fillStyle = 'rgba(255,220,80,0.9)';
     ctx.beginPath(); ctx.arc(M.pen.mira, golAtkY(M.pen.atk) + (golAtkY(M.pen.atk) === FY0 ? -10 : 10), 6, 0, 6.29); ctx.fill();
